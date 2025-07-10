@@ -1,13 +1,12 @@
 {
   "domain": "meteoalarm_map",
   "name": "Meteoalarm Europe Map",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "documentation": "https://www.meteoalarm.org/en/live/",
   "requirements": [
-    "selenium",
-    "webdriver-manager",
     "requests",
-    "voluptuous"
+    "voluptuous",
+    "Pillow"
   ],
   "config_flow": true,
   "codeowners": ["@connect-smart"],
