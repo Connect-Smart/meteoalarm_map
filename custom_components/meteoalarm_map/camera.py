@@ -14,15 +14,18 @@ from webdriver_manager.chrome import ChromeDriverManager
 _LOGGER = logging.getLogger(__name__)
 MIN_TIME_BETWEEN_UPDATES = timedelta(minutes=10)
 
-async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
-    async_add_entities([MeteoalarmCamera()], True)
+async def async_setup_entry(hass, config_entry, async_add_entities):
+    """Set up the Meteoalarm camera from a config entry."""
+    config = hass.data[DOMAIN]["config"]
+    async_add_entities([MeteoalarmCamera(config)], True)
 
 class MeteoalarmCamera(Camera):
-    def __init__(self):
+    def __init__(self, config):
         super().__init__()
         self._name = CAMERA_NAME
         self._image_path = IMAGE_PATH
         self._last_image = None
+        self._config = config
 
     @Throttle(MIN_TIME_BETWEEN_UPDATES)
     def update(self):
@@ -37,11 +40,17 @@ class MeteoalarmCamera(Camera):
             driver = webdriver.Chrome(ChromeDriverManager().install(), options=options)
             driver.get(URL)
             driver.implicitly_wait(10)
+            
+            # Ensure the directory exists
+            os.makedirs(os.path.dirname(self._image_path), exist_ok=True)
+            
             driver.save_screenshot(self._image_path)
             driver.quit()
 
             with open(self._image_path, "rb") as file:
                 self._last_image = file.read()
+                
+            _LOGGER.info("Successfully captured Meteoalarm map screenshot")
         except Exception as e:
             _LOGGER.error("Error generating map screenshot: %s", e)
 
@@ -53,3 +62,8 @@ class MeteoalarmCamera(Camera):
     @property
     def name(self):
         return self._name
+
+    @property
+    def unique_id(self):
+        """Return a unique ID for this camera."""
+        return f"{DOMAIN}_camera"
