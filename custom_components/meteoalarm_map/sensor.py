@@ -32,6 +32,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
 
 class MeteoalarmSensor(Entity):
     def __init__(self, config, rss_reader):
+        super().__init__()
         self._name = SENSOR_NAME
         self._state = None
         self._attributes = {}
@@ -41,10 +42,6 @@ class MeteoalarmSensor(Entity):
 
     async def async_added_to_hass(self):
         """When entity is added to hass, set up the update loop."""
-        # Ensure entity has proper registry entry
-        if not self.entity_id:
-            self.entity_id = f"sensor.{DOMAIN}_alerts"
-        
         async def update_loop():
             while True:
                 await self.async_update()
@@ -119,14 +116,6 @@ class MeteoalarmSensor(Entity):
         return self._name
 
     @property
-    def entity_id(self):
-        return f"sensor.{DOMAIN}_alerts"
-
-    @property
-    def entity_id(self):
-        return f"sensor.{DOMAIN}_alert_trigger"
-
-    @property
     def state(self):
         return self._state
 
@@ -156,6 +145,7 @@ class MeteoalarmSensor(Entity):
 
 class MeteoalarmAlertTriggerSensor(Entity):
     def __init__(self, config, rss_reader):
+        super().__init__()
         self._name = "Meteoalarm Alert Trigger"
         self._state = False
         self._previous_total = 0
@@ -167,10 +157,6 @@ class MeteoalarmAlertTriggerSensor(Entity):
 
     async def async_added_to_hass(self):
         """When entity is added to hass, set up the update loop."""
-        # Ensure entity has proper registry entry
-        if not self.entity_id:
-            self.entity_id = f"sensor.{DOMAIN}_alert_trigger"
-        
         # Initial update to set baseline
         await self.hass.async_add_executor_job(self._initialize_baseline)
         
@@ -258,7 +244,7 @@ class MeteoalarmAlertTriggerSensor(Entity):
                 
                 self._state = True
                 # Force immediate state update
-                self.schedule_update_ha_state()
+                self.async_write_ha_state()
 
                 # Cancel vorige geplande reset als die er is
                 if self._reset_task:
@@ -289,7 +275,7 @@ class MeteoalarmAlertTriggerSensor(Entity):
         self._state = False
         self._reset_task = None
         # Use threadsafe call to update state
-        self.schedule_update_ha_state()
+        self.hass.add_job(self.async_write_ha_state)
 
     @property
     def name(self):
