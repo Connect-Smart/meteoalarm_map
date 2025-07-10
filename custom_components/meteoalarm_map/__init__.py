@@ -1,19 +1,15 @@
 from .const import DOMAIN
-from homeassistant.config_entries import ConfigEntry
 
 async def async_setup(hass, config):
     return True
 
-async def async_setup_entry(hass, entry: ConfigEntry):
+async def async_setup_entry(hass, entry):
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN]["config"] = entry.data
 
-    hass.async_create_task(
-        hass.config_entries.async_forward_entry_setup(entry, "camera")
-    )
-    hass.async_create_task(
-        hass.config_entries.async_forward_entry_setup(entry, "sensor")
-    )
+    await hass.config_entries.async_forward_entry_setup(entry, "camera")
+    await hass.config_entries.async_forward_entry_setup(entry, "sensor")
+
     return True
 
 async def async_unload_entry(hass, entry):
