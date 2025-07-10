@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 
 from homeassistant.helpers.entity import Entity
@@ -53,8 +53,16 @@ class MeteoalarmSensor(Entity):
             countries = [c.lower() for c in self._config.get("countries", [])]
             start_date = datetime.strptime(self._config.get("vacation_start"), "%Y-%m-%d")
             end_date = datetime.strptime(self._config.get("vacation_end"), "%Y-%m-%d")
+            
+            # Extend date range to include more alerts (today and tomorrow)
+            today = datetime.now().date()
+            extended_start = min(start_date.date(), today)
+            extended_end = max(end_date.date(), today + timedelta(days=1))
+            
+            extended_start_dt = datetime.combine(extended_start, datetime.min.time())
+            extended_end_dt = datetime.combine(extended_end, datetime.max.time())
 
-            sensor_data = self._rss_reader.get_alerts_for_sensor(countries, start_date, end_date)
+            sensor_data = self._rss_reader.get_alerts_for_sensor(countries, extended_start_dt, extended_end_dt)
 
             self._state = sensor_data['total_count']
             self._attributes = {
@@ -62,6 +70,7 @@ class MeteoalarmSensor(Entity):
                 "countries_monitored": countries,
                 "countries_with_alerts": sensor_data['countries_affected'],
                 "vacation_period": f"{start_date.date()} to {end_date.date()}",
+                "extended_period": f"{extended_start} to {extended_end}",
                 "last_update": datetime.now().isoformat(),
                 "feed_source": "RSS",
                 "rss_last_fetch": self._rss_reader.last_update.isoformat() if self._rss_reader.last_update else None
@@ -129,12 +138,16 @@ class MeteoalarmAlertTriggerSensor(Entity):
         self._name = "Meteoalarm Alert Trigger"
         self._state = False
         self._previous_total = 0
+        self._previous_alerts = set()  # Track individual alerts by GUID
         self._config = config
         self._rss_reader = rss_reader
         self._reset_task = None
 
     async def async_added_to_hass(self):
         """Start periodic updates every 5 minutes."""
+        # Initial update to set baseline
+        await self.hass.async_add_executor_job(self._initialize_baseline)
+        
         async def update_loop():
             while True:
                 await self.hass.async_add_executor_job(self.update)
@@ -142,17 +155,75 @@ class MeteoalarmAlertTriggerSensor(Entity):
 
         self.hass.loop.create_task(update_loop())
 
+    def _initialize_baseline(self):
+        """Initialize the baseline without triggering alerts."""
+        try:
+            countries = [c.lower() for c in self._config.get("countries", [])]
+            start_date = datetime.strptime(self._config.get("vacation_start"), "%Y-%m-%d")
+            end_date = datetime.strptime(self._config.get("vacation_end"), "%Y-%m-%d")
+            
+            # Extend date range 
+            today = datetime.now().date()
+            extended_start = min(start_date.date(), today)
+            extended_end = max(end_date.date(), today + timedelta(days=1))
+            
+            extended_start_dt = datetime.combine(extended_start, datetime.min.time())
+            extended_end_dt = datetime.combine(extended_end, datetime.max.time())
+
+            data = self._rss_reader.get_alerts_for_sensor(countries, extended_start_dt, extended_end_dt)
+            
+            self._previous_total = data['total_count']
+            
+            # Track individual alerts by creating unique identifiers
+            current_alerts = set()
+            for alert in data['alerts']:
+                alert_id = f"{alert['country']}_{alert['event']}_{alert['level']}_{alert['pub_date']}"
+                current_alerts.add(alert_id)
+            
+            self._previous_alerts = current_alerts
+            
+            _LOGGER.info("Trigger sensor baseline initialized: %d alerts tracked", len(current_alerts))
+            
+        except Exception as e:
+            _LOGGER.error("Failed to initialize trigger sensor baseline: %s", e)
+
     def update(self):
         try:
             countries = [c.lower() for c in self._config.get("countries", [])]
             start_date = datetime.strptime(self._config.get("vacation_start"), "%Y-%m-%d")
             end_date = datetime.strptime(self._config.get("vacation_end"), "%Y-%m-%d")
+            
+            # Extend date range
+            today = datetime.now().date()
+            extended_start = min(start_date.date(), today)
+            extended_end = max(end_date.date(), today + timedelta(days=1))
+            
+            extended_start_dt = datetime.combine(extended_start, datetime.min.time())
+            extended_end_dt = datetime.combine(extended_end, datetime.max.time())
 
-            data = self._rss_reader.get_alerts_for_sensor(countries, start_date, end_date)
+            data = self._rss_reader.get_alerts_for_sensor(countries, extended_start_dt, extended_end_dt)
             new_total = data['total_count']
-
-            if new_total > self._previous_total:
-                _LOGGER.info("Nieuwe waarschuwing gedetecteerd (%d > %d)", new_total, self._previous_total)
+            
+            # Track individual alerts
+            current_alerts = set()
+            for alert in data['alerts']:
+                alert_id = f"{alert['country']}_{alert['event']}_{alert['level']}_{alert['pub_date']}"
+                current_alerts.add(alert_id)
+            
+            # Check for new alerts
+            new_alerts = current_alerts - self._previous_alerts
+            
+            if new_alerts:
+                _LOGGER.info("Nieuwe waarschuwingen gedetecteerd: %d nieuwe alerts (totaal: %d -> %d)", 
+                           len(new_alerts), self._previous_total, new_total)
+                
+                # Log details van nieuwe alerts
+                for alert in data['alerts']:
+                    alert_id = f"{alert['country']}_{alert['event']}_{alert['level']}_{alert['pub_date']}"
+                    if alert_id in new_alerts:
+                        _LOGGER.info("Nieuwe alert: %s - %s (%s)", 
+                                   alert['country'], alert['event'], alert['level'])
+                
                 self._state = True
                 self.async_schedule_update_ha_state()
 
@@ -163,8 +234,14 @@ class MeteoalarmAlertTriggerSensor(Entity):
 
                 # Plan reset over 5 minuten
                 self._reset_task = self.hass.loop.call_later(300, self._reset_callback)
+            
+            elif new_total != self._previous_total:
+                _LOGGER.info("Alert count changed maar geen nieuwe alerts: %d -> %d", 
+                           self._previous_total, new_total)
 
+            # Update tracking variables
             self._previous_total = new_total
+            self._previous_alerts = current_alerts
 
         except Exception as e:
             _LOGGER.error("Fout bij update trigger sensor: %s", e)
@@ -185,6 +262,14 @@ class MeteoalarmAlertTriggerSensor(Entity):
         return self._state
 
     @property
+    def extra_state_attributes(self):
+        return {
+            "previous_total": self._previous_total,
+            "tracked_alerts": len(self._previous_alerts),
+            "last_reset": datetime.now().isoformat() if self._reset_task else None
+        }
+
+    @property
     def unique_id(self):
         return f"{DOMAIN}_alert_trigger_sensor"
 
@@ -194,4 +279,4 @@ class MeteoalarmAlertTriggerSensor(Entity):
 
     @property
     def icon(self):
-        return "mdi:alarm-light"
+        return "mdi:alarm-light" if self._state else "mdi:alarm-light-off"

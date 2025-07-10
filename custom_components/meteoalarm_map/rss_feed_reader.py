@@ -1,7 +1,7 @@
 import logging
 import requests
 import xml.etree.ElementTree as ET
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 _LOGGER = logging.getLogger(__name__)
@@ -28,6 +28,7 @@ class MeteoalarmRSSReader:
             'bosnia': 'bosnia and herzegovina',
             'north macedonia': 'macedonia',
             'macedonia (the former yugoslav republic of)': 'macedonia',
+            'the former yugoslav republic of macedonia': 'macedonia',
             'the netherlands': 'netherlands',
             'holland': 'netherlands',
             'de': 'germany',
@@ -163,6 +164,27 @@ class MeteoalarmRSSReader:
             _LOGGER.debug("Error parsing time periods: %s", e)
             return []
 
+    def _is_alert_relevant(self, alert_time: datetime, periods: List[Dict], start_date: datetime, end_date: datetime) -> bool:
+        """Check if alert is relevant for the given date range."""
+        try:
+            # Check if alert publication date is within range
+            if start_date.date() <= alert_time.date() <= end_date.date():
+                return True
+            
+            # Check if any period overlaps with the date range
+            for period in periods:
+                period_start = period['from'].date()
+                period_end = period['until'].date()
+                
+                # Check if there's any overlap
+                if not (period_end < start_date.date() or period_start > end_date.date()):
+                    return True
+            
+            return False
+        except Exception as e:
+            _LOGGER.debug("Error checking alert relevance: %s", e)
+            return True  # Default to including the alert if we can't determine
+
     def fetch_alerts(self, monitored_countries: List[str], start_date: datetime, end_date: datetime) -> Dict:
         """
         Fetch and parse alerts from RSS feed.
@@ -180,6 +202,7 @@ class MeteoalarmRSSReader:
             
             # Normalize monitored countries
             normalized_countries = [self._normalize_country_name(c) for c in monitored_countries]
+            _LOGGER.debug("Normalized countries: %s", normalized_countries)
             
             # Fetch RSS feed
             response = requests.get(self.rss_url, timeout=15)
@@ -212,38 +235,36 @@ class MeteoalarmRSSReader:
                 
                 # Extract country from title
                 country = self._extract_country_from_title(title)
+                _LOGGER.debug("Processing: %s -> country: %s", title, country)
                 
                 if country and country in normalized_countries:
                     try:
                         # Parse publication date
                         if pub_date:
                             try:
-                                # Try multiple date formats
-                                for date_format in [
-                                    "%a, %d %b %Y %H:%M:%S %z",
-                                    "%a, %d %b %y %H:%M:%S %z", 
-                                    "%a, %d %b %Y %H:%M:%S %Z",
-                                    "%a, %d %b %y %H:%M:%S %Z"
-                                ]:
-                                    try:
-                                        event_time = datetime.strptime(pub_date, date_format)
-                                        break
-                                    except ValueError:
-                                        continue
-                                else:
-                                    # If no format worked, use current time
+                                # Use JavaScript Date parsing which is more flexible
+                                event_time = datetime.strptime(pub_date, "%a, %d %b %y %H:%M:%S %z")
+                            except ValueError:
+                                try:
+                                    event_time = datetime.strptime(pub_date, "%a, %d %b %Y %H:%M:%S %z")
+                                except ValueError:
+                                    _LOGGER.warning("Could not parse date: %s", pub_date)
                                     event_time = datetime.now()
-                            except Exception:
-                                event_time = datetime.now()
                         else:
                             event_time = datetime.now()
                         
-                        # Check if event is within date range
-                        if start_date.date() <= event_time.date() <= end_date.date():
-                            # Parse alert details from description
-                            level = self._parse_awareness_level_from_description(description)
-                            types = self._parse_awareness_type_from_description(description)
-                            periods = self._parse_time_periods(description)
+                        # Parse alert details from description
+                        level = self._parse_awareness_level_from_description(description)
+                        types = self._parse_awareness_type_from_description(description)
+                        periods = self._parse_time_periods(description)
+                        
+                        # Check if alert is relevant (more flexible date checking)
+                        if self._is_alert_relevant(event_time, periods, start_date, end_date):
+                            # Count individual alerts within the description
+                            import re
+                            alert_count = len(re.findall(r'data-awareness-level="(\d+)"', description))
+                            if alert_count == 0:
+                                alert_count = 1  # Fallback to 1 if no specific alerts found
                             
                             # Create alert object
                             alert = {
@@ -257,6 +278,7 @@ class MeteoalarmRSSReader:
                                 "link": link,
                                 "guid": guid,
                                 "periods": periods,
+                                "alert_count": alert_count,
                                 "raw_description": description
                             }
                             
@@ -264,14 +286,14 @@ class MeteoalarmRSSReader:
                             if country not in alerts_by_country:
                                 alerts_by_country[country] = {
                                     'level': level,
-                                    'count': 1,
+                                    'count': alert_count,
                                     'alerts': [alert],
                                     'types': types.copy(),
                                     'latest_date': pub_date,
                                     'highest_level_numeric': self._level_to_numeric(level)
                                 }
                             else:
-                                alerts_by_country[country]['count'] += 1
+                                alerts_by_country[country]['count'] += alert_count
                                 alerts_by_country[country]['alerts'].append(alert)
                                 
                                 # Add new types
@@ -288,6 +310,9 @@ class MeteoalarmRSSReader:
                                     alerts_by_country[country]['highest_level_numeric'] = new_level_numeric
                                     alerts_by_country[country]['latest_date'] = pub_date
                             
+                            _LOGGER.debug("Added alert for %s: %d alerts, level %s", 
+                                        country, alert_count, level)
+                    
                     except Exception as e:
                         _LOGGER.warning("Error processing alert '%s': %s", title, e)
                         continue
@@ -303,6 +328,11 @@ class MeteoalarmRSSReader:
                 "Successfully processed %d RSS items, found %d countries with %d total alerts",
                 total_items_processed, total_countries_with_alerts, total_alerts
             )
+            
+            # Debug output
+            for country, data in alerts_by_country.items():
+                _LOGGER.debug("Country %s: %d alerts, level %s, types %s", 
+                            country, data['count'], data['level'], data['types'])
             
             return alerts_by_country
             
@@ -334,22 +364,27 @@ class MeteoalarmRSSReader:
         
         # Convert to sensor format
         sensor_alerts = []
+        total_alert_count = 0
+        
         for country, data in alerts_data.items():
             for alert in data['alerts']:
-                sensor_alert = {
-                    "country": country,
-                    "event": alert['title'],
-                    "level": alert['level'],
-                    "type": ', '.join(alert['types']) if alert['types'] else 'unknown',
-                    "description": alert['description'],
-                    "pub_date": alert['pub_date'],
-                    "link": alert['link']
-                }
-                sensor_alerts.append(sensor_alert)
+                # Create individual sensor alerts for each alert type found
+                for i in range(alert['alert_count']):
+                    sensor_alert = {
+                        "country": country,
+                        "event": alert['title'],
+                        "level": alert['level'],
+                        "type": ', '.join(alert['types']) if alert['types'] else 'unknown',
+                        "description": alert['description'],
+                        "pub_date": alert['pub_date'],
+                        "link": alert['link']
+                    }
+                    sensor_alerts.append(sensor_alert)
+                    total_alert_count += 1
         
         return {
             'alerts': sensor_alerts,
-            'total_count': len(sensor_alerts),
+            'total_count': total_alert_count,
             'countries_affected': len(alerts_data),
             'alerts_by_country': alerts_data
         }
@@ -367,7 +402,7 @@ class MeteoalarmRSSReader:
                 'types': data['types'],
                 'titles': [alert['title'] for alert in data['alerts']],
                 'latest_date': data['latest_date'],
-                'periods': data['alerts'][0].get('periods', [])
+                'periods': data['alerts'][0].get('periods', []) if data['alerts'] else []
             }
         
         return camera_alerts
