@@ -6,7 +6,7 @@ import matplotlib.patches as mpatches
 from io import BytesIO
 import warnings
 import asyncio
-from meteoalarm import Meteoalarm
+from meteoalarm import MeteoAlarm
 import requests
 import json
 
@@ -33,8 +33,8 @@ class MeteoalarmCamera(Camera):
         self._last_image = None
         self._config = config
         
-        # Initialize Meteoalarm client
-        self._meteoalarm = Meteoalarm()
+        # Initialize MeteoAlarm client
+        self._meteoalarm = MeteoAlarm()
         
         # Alert level colors matching official Meteoalarm
         self.alert_colors = {
