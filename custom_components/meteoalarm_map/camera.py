@@ -1,6 +1,8 @@
 import logging
 import os
 from datetime import timedelta, datetime
+from dateutil import parser
+import locale
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.patches import Polygon
@@ -52,6 +54,69 @@ class MeteoalarmCamera(Camera):
             'not_monitored': '#F0F0F0'  # Light gray - Not monitored
         }
         
+        self.type_translations = {
+            'wind': 'Wind',
+            'snow': 'Sneeuw',
+            'thunderstorm': 'Onweer',
+            'fog': 'Mist',
+            'temperature': 'Temperatuur',
+            'coastal': 'Kust',
+            'forest_fire': 'Bosbrand',
+            'avalanche': 'Lawine',
+            'rain': 'Regen',
+            'flood': 'Overstroming',
+            'rain_flood': 'Regen/Overstroming',
+            'fire': 'Brand',
+            'unknown': 'Onbekend'
+        }
+
+        self.country_translations = {
+            "albania": "Albanië",
+            "austria": "Oostenrijk",
+            "belarus": "Wit-Rusland",
+            "belgium": "België",
+            "bosnia and herzegovina": "Bosnië en Herzegovina",
+            "bulgaria": "Bulgarije",
+            "croatia": "Kroatië",
+            "cyprus": "Cyprus",
+            "czech republic": "Tsjechië",
+            "czechia": "Tsjechië",
+            "denmark": "Denemarken",
+            "estonia": "Estland",
+            "finland": "Finland",
+            "france": "Frankrijk",
+            "germany": "Duitsland",
+            "greece": "Griekenland",
+            "hungary": "Hongarije",
+            "iceland": "IJsland",
+            "ireland": "Ierland",
+            "italy": "Italië",
+            "kosovo": "Kosovo",
+            "latvia": "Letland",
+            "lithuania": "Litouwen",
+            "luxembourg": "Luxemburg",
+            "macedonia": "Noord-Macedonië",
+            "malta": "Malta",
+            "moldova": "Moldavië",
+            "montenegro": "Montenegro",
+            "netherlands": "Nederland",
+            "norway": "Noorwegen",
+            "poland": "Polen",
+            "portugal": "Portugal",
+            "romania": "Roemenië",
+            "serbia": "Servië",
+            "slovakia": "Slowakije",
+            "slovenia": "Slovenië",
+            "spain": "Spanje",
+            "sweden": "Zweden",
+            "switzerland": "Zwitserland",
+            "turkey": "Turkije",
+            "ukraine": "Oekraïne",
+            "united kingdom": "Verenigd Koninkrijk",
+            "north macedonia": "Noord-Macedonië"
+        }
+
+
         # Cache for Europe map data
         self._europe_map_data = None
 
@@ -327,24 +392,48 @@ RSS Reader Status: {'✓ Active' if self._rss_reader.last_update else '⚠ No Da
                    verticalalignment='top', horizontalalignment='right',
                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.95, pad=1.0),
                    family='monospace')
-            
+                   
             # Add warning details for countries with alerts
             if warnings_by_country:
+                # Stel systeemtaal in op Nederlands (voor Linux HA OS)
+                try:
+                    locale.setlocale(locale.LC_TIME, 'nl_NL.UTF-8')
+                except locale.Error:
+                    _LOGGER.warning("Kon Nederlandse locale niet instellen, val terug op standaard.")
+                
                 details_text = "Actieve waarschuwingen:\n"
                 for country, warning in list(warnings_by_country.items())[:6]:
                     level_name = warning['level'].capitalize()
                     count = warning['count']
-                    types = ', '.join(set(warning['types'][:3]))  # Unieke types, eerste 3
-                    details_text += f"{country.title()}: {level_name} ({count} waarschuwingen)\n   Type: {types}\n"
-                
+
+                    # Vertaald type
+                    translated_types = [self.type_translations.get(t, t) for t in warning['types'][:3]]
+                    types_str = ', '.join(translated_types)
+
+                    # Datum parseren en vertalen naar NL-formaat
+                    pub_date_raw = warning.get('latest_date', '')
+                    try:
+                        parsed_date = parser.parse(pub_date_raw)
+                        date_str = parsed_date.strftime('%-d %B %Y')  # bijv. '8 juli 2025'
+                    except Exception:
+                        date_str = pub_date_raw[:16]
+
+                    # LANDNAAM vertalen
+                    country_nl = self.country_translations.get(country, country.title())
+
+                    details_text += (
+                        f"{country_nl} ({date_str}):\n"
+                        f"  Niveau: {level_name} - {count} waarschuwing(en)\n"
+                        f"  Type: {types_str}\n"
+                    )
+
                 if len(warnings_by_country) > 6:
                     details_text += f"... en nog {len(warnings_by_country) - 6} andere landen"
-                
+
                 ax.text(0.02, 0.65, details_text, transform=ax.transAxes, fontsize=10,
                         verticalalignment='top', horizontalalignment='left',
                         bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.95, pad=0.8))
-
-            
+              
             # Add branding
             ax.text(0.5, 0.02, 'Powered by Meteoalarm & Connect-Smart B.V.', 
                    transform=ax.transAxes, fontsize=10, ha='center', va='bottom',
