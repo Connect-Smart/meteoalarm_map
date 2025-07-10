@@ -244,17 +244,32 @@ class MeteoalarmCamera(Camera):
             return self._europe_map_data
         
         try:
-            # Use a reliable source for European countries GeoJSON
-            geojson_url = "https://raw.githubusercontent.com/holtzy/D3-graph-gallery/master/DATA/world.geojson"
+            # Try multiple GeoJSON sources for reliability
+            geojson_sources = [
+                "https://raw.githubusercontent.com/datasets/geo-countries/master/data/countries.geojson",
+                "https://raw.githubusercontent.com/holtzy/D3-graph-gallery/master/DATA/world.geojson",
+                "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_50m_admin_0_countries.geojson"
+            ]
             
-            _LOGGER.info("Loading Europe map data from GeoJSON...")
-            response = requests.get(geojson_url, timeout=30)
-            response.raise_for_status()
+            geojson_data = None
+            for url in geojson_sources:
+                try:
+                    _LOGGER.info("Trying to load Europe map data from: %s", url)
+                    response = requests.get(url, timeout=20)
+                    response.raise_for_status()
+                    geojson_data = response.json()
+                    _LOGGER.info("Successfully loaded GeoJSON data from: %s", url)
+                    break
+                except Exception as e:
+                    _LOGGER.warning("Failed to load from %s: %s", url, e)
+                    continue
             
-            geojson_data = response.json()
+            if not geojson_data:
+                _LOGGER.error("All GeoJSON sources failed, creating fallback data")
+                return self._create_fallback_geojson()
             
-            # Filter for European countries
-            european_countries = [
+            # Filter for European countries with comprehensive list
+            european_countries = {
                 'italy', 'spain', 'france', 'germany', 'united kingdom', 'poland',
                 'netherlands', 'belgium', 'portugal', 'switzerland', 'austria',
                 'norway', 'sweden', 'finland', 'denmark', 'czech republic',
@@ -262,30 +277,98 @@ class MeteoalarmCamera(Camera):
                 'croatia', 'slovenia', 'serbia', 'bosnia and herzegovina',
                 'albania', 'montenegro', 'ireland', 'estonia', 'latvia',
                 'lithuania', 'luxembourg', 'malta', 'cyprus', 'iceland',
-                'ukraine', 'belarus', 'moldova', 'macedonia', 'kosovo'
-            ]
+                'ukraine', 'belarus', 'moldova', 'macedonia', 'kosovo',
+                'czechia', 'north macedonia', 'turkey'
+            }
             
             europe_features = []
             for feature in geojson_data.get('features', []):
                 props = feature.get('properties', {})
-                country_name = props.get('NAME', '').lower()
+                
+                # Try multiple property names for country name
+                country_name = None
+                for prop_name in ['NAME', 'NAME_EN', 'ADMIN', 'name', 'country', 'Country']:
+                    if prop_name in props:
+                        country_name = props[prop_name]
+                        break
+                
+                if not country_name:
+                    continue
+                
+                country_name = country_name.lower()
                 
                 # Normalize country name
                 normalized_name = self._normalize_country_name(country_name)
                 
                 if normalized_name in european_countries or country_name in european_countries:
                     # Add normalized name to properties
-                    props['NORMALIZED_NAME'] = normalized_name
+                    props['NORMALIZED_NAME'] = normalized_name if normalized_name in european_countries else country_name
                     europe_features.append(feature)
             
+            if not europe_features:
+                _LOGGER.warning("No European countries found in GeoJSON, creating fallback")
+                return self._create_fallback_geojson()
+            
             self._europe_map_data = {'type': 'FeatureCollection', 'features': europe_features}
-            _LOGGER.info("Loaded %d European countries from GeoJSON", len(europe_features))
+            _LOGGER.info("Successfully loaded %d European countries from GeoJSON", len(europe_features))
             
             return self._europe_map_data
             
         except Exception as e:
             _LOGGER.error("Error loading Europe map data: %s", e)
-            return None
+            return self._create_fallback_geojson()
+
+    def _create_fallback_geojson(self):
+        """Create a simple fallback GeoJSON with basic European country shapes."""
+        _LOGGER.info("Creating fallback GeoJSON data")
+        
+        # Simple polygon coordinates for major European countries
+        fallback_countries = {
+            'italy': [[[12.0, 46.0], [18.0, 40.0], [15.0, 37.0], [8.0, 39.0], [7.0, 44.0], [12.0, 46.0]]],
+            'spain': [[[-9.0, 43.0], [3.0, 43.0], [3.0, 36.0], [-9.0, 36.0], [-9.0, 43.0]]],
+            'france': [[[2.0, 51.0], [8.0, 49.0], [7.0, 43.0], [-1.0, 43.0], [-5.0, 48.0], [2.0, 51.0]]],
+            'germany': [[[6.0, 55.0], [15.0, 54.0], [15.0, 47.0], [6.0, 47.0], [6.0, 55.0]]],
+            'united kingdom': [[[-8.0, 60.0], [2.0, 60.0], [2.0, 50.0], [-8.0, 50.0], [-8.0, 60.0]]],
+            'poland': [[[14.0, 54.0], [24.0, 54.0], [24.0, 49.0], [14.0, 49.0], [14.0, 54.0]]],
+            'netherlands': [[[3.0, 54.0], [7.0, 54.0], [7.0, 51.0], [3.0, 51.0], [3.0, 54.0]]],
+            'belgium': [[[2.5, 51.5], [6.5, 51.5], [6.5, 49.5], [2.5, 49.5], [2.5, 51.5]]],
+            'portugal': [[[-9.5, 42.0], [-6.0, 42.0], [-6.0, 37.0], [-9.5, 37.0], [-9.5, 42.0]]],
+            'switzerland': [[[6.0, 47.8], [10.5, 47.8], [10.5, 45.8], [6.0, 45.8], [6.0, 47.8]]],
+            'austria': [[[9.5, 49.0], [17.0, 49.0], [17.0, 46.0], [9.5, 46.0], [9.5, 49.0]]],
+            'norway': [[[5.0, 71.0], [31.0, 71.0], [31.0, 58.0], [5.0, 58.0], [5.0, 71.0]]],
+            'sweden': [[[11.0, 69.0], [24.0, 69.0], [24.0, 55.0], [11.0, 55.0], [11.0, 69.0]]],
+            'finland': [[[20.0, 70.0], [32.0, 70.0], [32.0, 60.0], [20.0, 60.0], [20.0, 70.0]]],
+            'denmark': [[[8.0, 58.0], [13.0, 58.0], [13.0, 54.0], [8.0, 54.0], [8.0, 58.0]]],
+            'czech republic': [[[12.0, 51.0], [19.0, 51.0], [19.0, 48.0], [12.0, 48.0], [12.0, 51.0]]],
+            'slovakia': [[[17.0, 49.5], [22.5, 49.5], [22.5, 47.5], [17.0, 47.5], [17.0, 49.5]]],
+            'hungary': [[[16.0, 48.5], [23.0, 48.5], [23.0, 45.5], [16.0, 45.5], [16.0, 48.5]]],
+            'romania': [[[20.0, 48.0], [30.0, 48.0], [30.0, 43.0], [20.0, 43.0], [20.0, 48.0]]],
+            'bulgaria': [[[22.0, 44.0], [29.0, 44.0], [29.0, 41.0], [22.0, 41.0], [22.0, 44.0]]],
+            'greece': [[[19.0, 42.0], [28.0, 42.0], [28.0, 34.0], [19.0, 34.0], [19.0, 42.0]]],
+            'croatia': [[[13.0, 46.5], [19.5, 46.5], [19.5, 42.5], [13.0, 42.5], [13.0, 46.5]]],
+            'slovenia': [[[13.0, 47.0], [16.5, 47.0], [16.5, 45.0], [13.0, 45.0], [13.0, 47.0]]],
+            'ireland': [[[-10.5, 55.5], [-5.5, 55.5], [-5.5, 51.5], [-10.5, 51.5], [-10.5, 55.5]]],
+            'estonia': [[[21.0, 60.0], [28.0, 60.0], [28.0, 57.0], [21.0, 57.0], [21.0, 60.0]]],
+            'latvia': [[[21.0, 58.0], [28.0, 58.0], [28.0, 55.0], [21.0, 55.0], [21.0, 58.0]]],
+            'lithuania': [[[21.0, 56.5], [26.5, 56.5], [26.5, 53.5], [21.0, 53.5], [21.0, 56.5]]]
+        }
+        
+        features = []
+        for country_name, coordinates in fallback_countries.items():
+            feature = {
+                'type': 'Feature',
+                'properties': {
+                    'NAME': country_name.title(),
+                    'NORMALIZED_NAME': country_name
+                },
+                'geometry': {
+                    'type': 'Polygon',
+                    'coordinates': coordinates
+                }
+            }
+            features.append(feature)
+        
+        return {'type': 'FeatureCollection', 'features': features}
 
     def _create_country_polygons(self, map_data, warnings_by_country, monitored_countries):
         """Create matplotlib polygons for each country with appropriate colors."""
