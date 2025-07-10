@@ -22,13 +22,15 @@ class MeteoalarmSensor(Entity):
         self._config = config
 
     def _extract_country_from_title(self, title):
-        """Extract country name from the RSS item title."""
-        # RSS titles typically start with country name followed by colon or dash
-        # Example: "Italy: Orange level wind warning"
+        title = title.strip().lower()
+        known_prefixes = ['meteoalarm ']
+        for prefix in known_prefixes:
+            if title.startswith(prefix):
+                return title[len(prefix):].strip()
         if ':' in title:
-            return title.split(':')[0].strip().lower()
+            return title.split(':')[0].strip()
         elif ' - ' in title:
-            return title.split(' - ')[0].strip().lower()
+            return title.split(' - ')[0].strip()
         return ""
 
     def _parse_awareness_level(self, title, description):
