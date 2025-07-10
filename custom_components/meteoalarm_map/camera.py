@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from datetime import timedelta, datetime
@@ -48,6 +49,16 @@ class MeteoalarmCamera(Camera):
         self._config = config
         self._rss_reader = rss_reader
         
+    async def async_added_to_hass(self):
+        """Start een periodieke taak om de camera-image bij te werken."""
+        async def update_loop():
+            while True:
+                _LOGGER.debug("Camera update triggered by internal loop.")
+                await self.hass.async_add_executor_job(self.update)
+                await asyncio.sleep(600)  # elke 10 minuten
+
+        self.hass.loop.create_task(update_loop())
+
         # Alert level colors matching official Meteoalarm
         self.alert_colors = {
             'red': '#FF0000',      # Level 4 - Red - Extreme
