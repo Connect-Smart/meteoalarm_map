@@ -9,6 +9,7 @@ from .const import DOMAIN, CAMERA_NAME, IMAGE_PATH, URL
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 
 _LOGGER = logging.getLogger(__name__)
@@ -37,7 +38,8 @@ class MeteoalarmCamera(Camera):
             options.add_argument("--window-size=1280,720")
             options.add_argument("--disable-gpu")
 
-            driver = webdriver.Chrome(ChromeDriverManager().install(), options=options)
+            service = webdriver.chrome.service.Service(ChromeDriverManager().install())
+            driver = webdriver.Chrome(service=service, options=options)
             driver.get(URL)
             driver.implicitly_wait(10)
             
