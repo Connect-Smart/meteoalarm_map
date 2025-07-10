@@ -48,6 +48,7 @@ class MeteoalarmCamera(Camera):
         self._last_image = None
         self._config = config
         self._rss_reader = rss_reader
+        self._europe_map_data = None
         
     async def async_added_to_hass(self):
         """Start een periodieke taak om de camera-image bij te werken."""
@@ -132,7 +133,6 @@ class MeteoalarmCamera(Camera):
             "united kingdom": "Verenigd Koninkrijk",
             "north macedonia": "Noord-Macedonië"
         }
-
 
         # Cache for Europe map data
         self._europe_map_data = None
