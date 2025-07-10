@@ -9,11 +9,11 @@ from io import BytesIO
 import warnings
 import requests
 import json
-import xml.etree.ElementTree as ET
 
 from homeassistant.components.camera import Camera
 from homeassistant.util import Throttle
 from .const import DOMAIN, CAMERA_NAME, IMAGE_PATH, RSS_FEED
+from .rss_feed_reader import MeteoalarmRSSReader
 
 # Suppress matplotlib warnings
 warnings.filterwarnings('ignore')
@@ -24,15 +24,21 @@ MIN_TIME_BETWEEN_UPDATES = timedelta(minutes=10)
 async def async_setup_entry(hass, config_entry, async_add_entities):
     """Set up the Meteoalarm camera from a config entry."""
     config = hass.data[DOMAIN]["config"]
-    async_add_entities([MeteoalarmCamera(config)], True)
+    
+    # Create shared RSS reader instance if not exists
+    if "rss_reader" not in hass.data[DOMAIN]:
+        hass.data[DOMAIN]["rss_reader"] = MeteoalarmRSSReader(RSS_FEED)
+    
+    async_add_entities([MeteoalarmCamera(config, hass.data[DOMAIN]["rss_reader"])], True)
 
 class MeteoalarmCamera(Camera):
-    def __init__(self, config):
+    def __init__(self, config, rss_reader):
         super().__init__()
         self._name = CAMERA_NAME
         self._image_path = IMAGE_PATH
         self._last_image = None
         self._config = config
+        self._rss_reader = rss_reader
         
         # Alert level colors matching official Meteoalarm
         self.alert_colors = {
@@ -46,197 +52,8 @@ class MeteoalarmCamera(Camera):
             'not_monitored': '#F0F0F0'  # Light gray - Not monitored
         }
         
-        # Country name mappings for consistent naming
-        self.country_mappings = {
-            'gb': 'united kingdom',
-            'uk': 'united kingdom',
-            'great britain': 'united kingdom',
-            'england': 'united kingdom',
-            'scotland': 'united kingdom',
-            'wales': 'united kingdom',
-            'northern ireland': 'united kingdom',
-            'cz': 'czech republic',
-            'czechia': 'czech republic',
-            'bosnia': 'bosnia and herzegovina',
-            'north macedonia': 'macedonia',
-            'the netherlands': 'netherlands',
-            'holland': 'netherlands',
-            'de': 'germany',
-            'deutschland': 'germany',
-            'fr': 'france',
-            'it': 'italy',
-            'italia': 'italy',
-            'es': 'spain',
-            'españa': 'spain',
-            'pt': 'portugal',
-            'nl': 'netherlands',
-            'be': 'belgium',
-            'ch': 'switzerland',
-            'at': 'austria',
-            'pl': 'poland',
-            'no': 'norway',
-            'se': 'sweden',
-            'fi': 'finland',
-            'dk': 'denmark',
-            'ie': 'ireland',
-            'gr': 'greece',
-            'bg': 'bulgaria',
-            'ro': 'romania',
-            'hu': 'hungary',
-            'hr': 'croatia',
-            'si': 'slovenia',
-            'sk': 'slovakia',
-            'ee': 'estonia',
-            'lv': 'latvia',
-            'lt': 'lithuania'
-        }
-        
         # Cache for Europe map data
         self._europe_map_data = None
-
-    def _normalize_country_name(self, country):
-        """Normalize country name for consistent matching."""
-        if not country:
-            return ""
-        
-        country_lower = country.lower().strip()
-        return self.country_mappings.get(country_lower, country_lower)
-
-    def _extract_country_from_title(self, title):
-        """Extract country name from the RSS item title."""
-        if ':' in title:
-            country = title.split(':')[0].strip().lower()
-        elif ' - ' in title:
-            country = title.split(' - ')[0].strip().lower()
-        else:
-            country = ""
-        
-        # Apply country mappings
-        return self._normalize_country_name(country)
-
-    def _parse_awareness_level(self, title, description):
-        """Parse awareness level from title or description."""
-        text = f"{title} {description}".lower()
-        
-        # Check for explicit level mentions first
-        if 'red' in text or 'extreme' in text:
-            return 'red'
-        elif 'orange' in text or 'severe' in text:
-            return 'orange'
-        elif 'yellow' in text or 'moderate' in text:
-            return 'yellow'
-        elif 'green' in text or 'minor' in text:
-            return 'green'
-        
-        # Fallback: try to determine from severity keywords
-        if any(word in text for word in ['dangerous', 'life-threatening', 'catastrophic']):
-            return 'red'
-        elif any(word in text for word in ['significant', 'considerable', 'widespread']):
-            return 'orange'
-        elif any(word in text for word in ['possible', 'likely', 'expected']):
-            return 'yellow'
-            
-        return 'unknown'
-
-    def _get_alerts_from_rss(self):
-        """Fetch alerts data from RSS feed."""
-        try:
-            alerts_by_country = {}
-            monitored_countries = [c.lower() for c in self._config.get("countries", [])]
-            
-            _LOGGER.info("Fetching alerts from RSS feed for %d monitored countries", len(monitored_countries))
-            
-            # Get vacation period for filtering
-            start_date = datetime.strptime(self._config.get("vacation_start"), "%Y-%m-%d").date()
-            end_date = datetime.strptime(self._config.get("vacation_end"), "%Y-%m-%d").date()
-            
-            # Fetch RSS feed
-            r = requests.get(RSS_FEED, timeout=15)
-            r.raise_for_status()
-            
-            root = ET.fromstring(r.content)
-            
-            for item in root.findall('.//item'):
-                title_elem = item.find('title')
-                description_elem = item.find('description')
-                pub_date_elem = item.find('pubDate')
-                
-                if title_elem is None or description_elem is None:
-                    continue
-                    
-                title = title_elem.text or ""
-                description = description_elem.text or ""
-                pub_date = pub_date_elem.text if pub_date_elem is not None else ""
-                
-                country = self._extract_country_from_title(title)
-                
-                if country and country in monitored_countries:
-                    try:
-                        # Parse publication date
-                        if pub_date:
-                            try:
-                                # RSS date format: "Wed, 10 Jul 2025 08:00:00 GMT"
-                                event_time = datetime.strptime(pub_date, "%a, %d %b %Y %H:%M:%S %Z")
-                            except ValueError:
-                                # Try alternative format
-                                event_time = datetime.strptime(pub_date, "%a, %d %b %Y %H:%M:%S %z")
-                        else:
-                            event_time = datetime.now()
-                            
-                        if start_date <= event_time.date() <= end_date:
-                            level = self._parse_awareness_level(title, description)
-                            
-                            if country not in alerts_by_country:
-                                alerts_by_country[country] = {
-                                    'level': level,
-                                    'count': 1,
-                                    'titles': [title],
-                                    'types': [self._extract_event_type(title, description)],
-                                    'latest_date': pub_date
-                                }
-                            else:
-                                alerts_by_country[country]['count'] += 1
-                                alerts_by_country[country]['titles'].append(title)
-                                alerts_by_country[country]['types'].append(self._extract_event_type(title, description))
-                                
-                                # Update to highest priority level
-                                current_level = alerts_by_country[country]['level']
-                                level_priority = {'red': 4, 'orange': 3, 'yellow': 2, 'green': 1, 'unknown': 0}
-                                if level_priority.get(level, 0) > level_priority.get(current_level, 0):
-                                    alerts_by_country[country]['level'] = level
-                                    
-                    except Exception as e:
-                        _LOGGER.warning("Error processing alert '%s': %s", title, e)
-                        continue
-            
-            _LOGGER.info("Successfully fetched %d countries with alerts from RSS feed", len(alerts_by_country))
-            return alerts_by_country
-            
-        except Exception as e:
-            _LOGGER.error("Error fetching alerts from RSS feed: %s", e)
-            return {}
-
-    def _extract_event_type(self, title, description):
-        """Extract event type from title or description."""
-        text = f"{title} {description}".lower()
-        
-        event_types = {
-            'wind': ['wind', 'storm', 'gale'],
-            'rain': ['rain', 'precipitation', 'shower'],
-            'snow': ['snow', 'blizzard', 'snowfall'],
-            'thunderstorm': ['thunderstorm', 'lightning', 'thunder'],
-            'fog': ['fog', 'visibility', 'mist'],
-            'temperature': ['temperature', 'heat', 'cold', 'frost', 'freeze'],
-            'ice': ['ice', 'icing', 'freezing'],
-            'flood': ['flood', 'flooding', 'water'],
-            'coastal': ['coastal', 'sea', 'wave', 'tide']
-        }
-        
-        for event_type, keywords in event_types.items():
-            if any(keyword in text for keyword in keywords):
-                return event_type
-        
-        return 'general'
 
     def _load_europe_map_data(self):
         """Load Europe map data from GeoJSON source."""
@@ -297,8 +114,8 @@ class MeteoalarmCamera(Camera):
                 
                 country_name = country_name.lower()
                 
-                # Normalize country name
-                normalized_name = self._normalize_country_name(country_name)
+                # Normalize country name using RSS reader's mapping
+                normalized_name = self._rss_reader._normalize_country_name(country_name)
                 
                 if normalized_name in european_countries or country_name in european_countries:
                     # Add normalized name to properties
@@ -493,16 +310,18 @@ class MeteoalarmCamera(Camera):
                     level_counts[level] += 1
             
             stats_text = f"""Bron: Meteoalarm RSS-feed
-            Gemonitorde landen: {monitored_count}
-            Landen met waarschuwingen: {countries_with_warnings}
-            Totaal aantal actieve waarschuwingen: {total_warnings}
+Gemonitorde landen: {monitored_count}
+Landen met waarschuwingen: {countries_with_warnings}
+Totaal aantal actieve waarschuwingen: {total_warnings}
 
-            Verdeling van waarschuwingen:
-            Rood (Extreem): {level_counts['red']} landen
-            Oranje (Ernstig): {level_counts['orange']} landen
-            Geel (Matig): {level_counts['yellow']} landen
-            Groen (Licht): {level_counts['green']} landen
-            Wit (Geen waarschuwing): {level_counts['white']} landen"""
+Verdeling van waarschuwingen:
+Rood (Extreem): {level_counts['red']} landen
+Oranje (Ernstig): {level_counts['orange']} landen
+Geel (Matig): {level_counts['yellow']} landen
+Groen (Licht): {level_counts['green']} landen
+Wit (Geen waarschuwing): {level_counts['white']} landen
+
+RSS Reader Status: {'✓ Active' if self._rss_reader.last_update else '⚠ No Data'}"""
             
             ax.text(0.98, 0.98, stats_text, transform=ax.transAxes, fontsize=11,
                    verticalalignment='top', horizontalalignment='right',
@@ -564,7 +383,8 @@ class MeteoalarmCamera(Camera):
             
             stats_text = f"""⚠️ Current Warnings: {total_warnings}
 📊 Countries affected: {countries_with_warnings}
-🌍 Monitoring: {len(monitored_countries)} countries"""
+🌍 Monitoring: {len(monitored_countries)} countries
+🔄 RSS Status: {'OK' if self._rss_reader.last_update else 'No Data'}"""
             
             ax.text(0.02, 0.98, stats_text, transform=ax.transAxes, fontsize=12,
                    verticalalignment='top', horizontalalignment='left',
@@ -617,11 +437,16 @@ class MeteoalarmCamera(Camera):
         try:
             _LOGGER.info("Updating detailed Europe map with RSS feed data...")
             
-            # Get alerts data from RSS
-            alerts_data = self._get_alerts_from_rss()
+            # Get configuration
+            countries = [c.lower() for c in self._config.get("countries", [])]
+            start_date = datetime.strptime(self._config.get("vacation_start"), "%Y-%m-%d")
+            end_date = datetime.strptime(self._config.get("vacation_end"), "%Y-%m-%d")
             
-            # Get monitored countries (normalized)
-            monitored_countries = [self._normalize_country_name(c) for c in self._config.get("countries", [])]
+            # Get alerts data from shared RSS reader
+            alerts_data = self._rss_reader.get_alerts_for_camera(countries, start_date, end_date)
+            
+            # Normalize monitored countries using RSS reader's method
+            monitored_countries = [self._rss_reader._normalize_country_name(c) for c in countries]
             
             # Render the detailed Europe map
             image_data = self._render_europe_map(alerts_data, monitored_countries)
