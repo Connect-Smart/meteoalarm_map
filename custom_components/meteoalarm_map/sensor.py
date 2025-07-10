@@ -42,7 +42,12 @@ class MeteoalarmSensor(Entity):
 
     async def async_added_to_hass(self):
         """When entity is added to hass, set up the update loop."""
+        # Wait for entity to be fully registered
+        await super().async_added_to_hass()
+        
         async def update_loop():
+            # Wait a bit to ensure entity is fully registered
+            await asyncio.sleep(5)
             while True:
                 await self.async_update()
                 await asyncio.sleep(300)
@@ -51,6 +56,11 @@ class MeteoalarmSensor(Entity):
 
     async def async_update(self):
         """Update the sensor state and attributes asynchronously."""
+        # Check if entity is properly initialized
+        if not self.entity_id:
+            _LOGGER.warning("Entity ID not yet available, skipping update")
+            return
+            
         try:
             countries = [c.lower() for c in self._config.get("countries", [])]
             start_date = datetime.strptime(self._config.get("vacation_start"), "%Y-%m-%d")
@@ -157,10 +167,15 @@ class MeteoalarmAlertTriggerSensor(Entity):
 
     async def async_added_to_hass(self):
         """When entity is added to hass, set up the update loop."""
+        # Wait for entity to be fully registered
+        await super().async_added_to_hass()
+        
         # Initial update to set baseline
         await self.hass.async_add_executor_job(self._initialize_baseline)
         
         async def update_loop():
+            # Wait a bit to ensure entity is fully registered
+            await asyncio.sleep(5)
             while True:
                 await self.async_update()
                 await asyncio.sleep(300)
@@ -201,6 +216,11 @@ class MeteoalarmAlertTriggerSensor(Entity):
 
     async def async_update(self):
         """Update the trigger sensor asynchronously."""
+        # Check if entity is properly initialized
+        if not self.entity_id:
+            _LOGGER.warning("Entity ID not yet available, skipping update")
+            return
+            
         try:
             countries = [c.lower() for c in self._config.get("countries", [])]
             start_date = datetime.strptime(self._config.get("vacation_start"), "%Y-%m-%d")
@@ -243,8 +263,11 @@ class MeteoalarmAlertTriggerSensor(Entity):
                                    alert['country'], alert['event'], alert['level'])
                 
                 self._state = True
-                # Force immediate state update
-                self.async_write_ha_state()
+                # Force immediate state update with safety check
+                if self.entity_id:
+                    self.async_write_ha_state()
+                else:
+                    _LOGGER.warning("Cannot update state - entity_id not available")
 
                 # Cancel vorige geplande reset als die er is
                 if self._reset_task:
@@ -274,8 +297,11 @@ class MeteoalarmAlertTriggerSensor(Entity):
         _LOGGER.info("Resetting trigger sensor to False")
         self._state = False
         self._reset_task = None
-        # Use threadsafe call to update state
-        self.hass.add_job(self.async_write_ha_state)
+        # Use threadsafe call to update state with safety check
+        if self.entity_id:
+            self.hass.add_job(self.async_write_ha_state)
+        else:
+            _LOGGER.warning("Cannot reset state - entity_id not available")
 
     @property
     def name(self):
