@@ -7,14 +7,13 @@ from matplotlib.patches import Polygon
 from matplotlib.collections import PatchCollection
 from io import BytesIO
 import warnings
-import asyncio
-from meteoalarm import MeteoAlarm
 import requests
 import json
+import xml.etree.ElementTree as ET
 
 from homeassistant.components.camera import Camera
 from homeassistant.util import Throttle
-from .const import DOMAIN, CAMERA_NAME, IMAGE_PATH
+from .const import DOMAIN, CAMERA_NAME, IMAGE_PATH, RSS_FEED
 
 # Suppress matplotlib warnings
 warnings.filterwarnings('ignore')
@@ -35,10 +34,6 @@ class MeteoalarmCamera(Camera):
         self._last_image = None
         self._config = config
         
-        # Initialize MeteoAlarm client with monitored countries
-        monitored_countries = [c.lower() for c in config.get("countries", [])]
-        self._meteoalarm = MeteoAlarm(countries=monitored_countries)
-        
         # Alert level colors matching official Meteoalarm
         self.alert_colors = {
             'red': '#FF0000',      # Level 4 - Red - Extreme
@@ -49,15 +44,6 @@ class MeteoalarmCamera(Camera):
             'unknown': '#CCCCCC',  # Gray - Unknown
             'no_alert': '#E8F4FD', # Light blue - Monitored, no alerts
             'not_monitored': '#F0F0F0'  # Light gray - Not monitored
-        }
-        
-        # Meteoalarm awareness level mapping
-        self.level_mapping = {
-            4: 'red',     # Extreme
-            3: 'orange',  # Severe
-            2: 'yellow',  # Moderate
-            1: 'green',   # Minor
-            0: 'white'    # No warning
         }
         
         # Country name mappings for consistent naming
@@ -115,6 +101,142 @@ class MeteoalarmCamera(Camera):
         
         country_lower = country.lower().strip()
         return self.country_mappings.get(country_lower, country_lower)
+
+    def _extract_country_from_title(self, title):
+        """Extract country name from the RSS item title."""
+        if ':' in title:
+            country = title.split(':')[0].strip().lower()
+        elif ' - ' in title:
+            country = title.split(' - ')[0].strip().lower()
+        else:
+            country = ""
+        
+        # Apply country mappings
+        return self._normalize_country_name(country)
+
+    def _parse_awareness_level(self, title, description):
+        """Parse awareness level from title or description."""
+        text = f"{title} {description}".lower()
+        
+        # Check for explicit level mentions first
+        if 'red' in text or 'extreme' in text:
+            return 'red'
+        elif 'orange' in text or 'severe' in text:
+            return 'orange'
+        elif 'yellow' in text or 'moderate' in text:
+            return 'yellow'
+        elif 'green' in text or 'minor' in text:
+            return 'green'
+        
+        # Fallback: try to determine from severity keywords
+        if any(word in text for word in ['dangerous', 'life-threatening', 'catastrophic']):
+            return 'red'
+        elif any(word in text for word in ['significant', 'considerable', 'widespread']):
+            return 'orange'
+        elif any(word in text for word in ['possible', 'likely', 'expected']):
+            return 'yellow'
+            
+        return 'unknown'
+
+    def _get_alerts_from_rss(self):
+        """Fetch alerts data from RSS feed."""
+        try:
+            alerts_by_country = {}
+            monitored_countries = [c.lower() for c in self._config.get("countries", [])]
+            
+            _LOGGER.info("Fetching alerts from RSS feed for %d monitored countries", len(monitored_countries))
+            
+            # Get vacation period for filtering
+            start_date = datetime.strptime(self._config.get("vacation_start"), "%Y-%m-%d").date()
+            end_date = datetime.strptime(self._config.get("vacation_end"), "%Y-%m-%d").date()
+            
+            # Fetch RSS feed
+            r = requests.get(RSS_FEED, timeout=15)
+            r.raise_for_status()
+            
+            root = ET.fromstring(r.content)
+            
+            for item in root.findall('.//item'):
+                title_elem = item.find('title')
+                description_elem = item.find('description')
+                pub_date_elem = item.find('pubDate')
+                
+                if title_elem is None or description_elem is None:
+                    continue
+                    
+                title = title_elem.text or ""
+                description = description_elem.text or ""
+                pub_date = pub_date_elem.text if pub_date_elem is not None else ""
+                
+                country = self._extract_country_from_title(title)
+                
+                if country and country in monitored_countries:
+                    try:
+                        # Parse publication date
+                        if pub_date:
+                            try:
+                                # RSS date format: "Wed, 10 Jul 2025 08:00:00 GMT"
+                                event_time = datetime.strptime(pub_date, "%a, %d %b %Y %H:%M:%S %Z")
+                            except ValueError:
+                                # Try alternative format
+                                event_time = datetime.strptime(pub_date, "%a, %d %b %Y %H:%M:%S %z")
+                        else:
+                            event_time = datetime.now()
+                            
+                        if start_date <= event_time.date() <= end_date:
+                            level = self._parse_awareness_level(title, description)
+                            
+                            if country not in alerts_by_country:
+                                alerts_by_country[country] = {
+                                    'level': level,
+                                    'count': 1,
+                                    'titles': [title],
+                                    'types': [self._extract_event_type(title, description)],
+                                    'latest_date': pub_date
+                                }
+                            else:
+                                alerts_by_country[country]['count'] += 1
+                                alerts_by_country[country]['titles'].append(title)
+                                alerts_by_country[country]['types'].append(self._extract_event_type(title, description))
+                                
+                                # Update to highest priority level
+                                current_level = alerts_by_country[country]['level']
+                                level_priority = {'red': 4, 'orange': 3, 'yellow': 2, 'green': 1, 'unknown': 0}
+                                if level_priority.get(level, 0) > level_priority.get(current_level, 0):
+                                    alerts_by_country[country]['level'] = level
+                                    
+                    except Exception as e:
+                        _LOGGER.warning("Error processing alert '%s': %s", title, e)
+                        continue
+            
+            _LOGGER.info("Successfully fetched %d countries with alerts from RSS feed", len(alerts_by_country))
+            return alerts_by_country
+            
+        except Exception as e:
+            _LOGGER.error("Error fetching alerts from RSS feed: %s", e)
+            return {}
+
+    def _extract_event_type(self, title, description):
+        """Extract event type from title or description."""
+        text = f"{title} {description}".lower()
+        
+        event_types = {
+            'wind': ['wind', 'storm', 'gale'],
+            'rain': ['rain', 'precipitation', 'shower'],
+            'snow': ['snow', 'blizzard', 'snowfall'],
+            'thunderstorm': ['thunderstorm', 'lightning', 'thunder'],
+            'fog': ['fog', 'visibility', 'mist'],
+            'temperature': ['temperature', 'heat', 'cold', 'frost', 'freeze'],
+            'ice': ['ice', 'icing', 'freezing'],
+            'flood': ['flood', 'flooding', 'water'],
+            'coastal': ['coastal', 'sea', 'wave', 'tide']
+        }
+        
+        for event_type, keywords in event_types.items():
+            if any(keyword in text for keyword in keywords):
+                return event_type
+        
+        return 'general'
 
     def _load_europe_map_data(self):
         """Load Europe map data from GeoJSON source."""
@@ -214,110 +336,6 @@ class MeteoalarmCamera(Camera):
         
         return patches, colors
 
-    async def _get_alerts_data_async(self):
-        """Fetch alerts data using the official Meteoalarm library."""
-        try:
-            alerts_by_country = {}
-            monitored_countries = [c.lower() for c in self._config.get("countries", [])]
-            
-            _LOGGER.info("Fetching alerts for %d monitored countries using Meteoalarm library", len(monitored_countries))
-            
-            # Get vacation period for filtering
-            start_date = datetime.strptime(self._config.get("vacation_start"), "%Y-%m-%d").date()
-            end_date = datetime.strptime(self._config.get("vacation_end"), "%Y-%m-%d").date()
-            
-            # Get all alerts (MeteoAlarm is already configured with countries)
-            alerts = await self._meteoalarm.async_get_alerts()
-            
-            if alerts:
-                for alert in alerts:
-                    try:
-                        # Get country from alert
-                        country = None
-                        if hasattr(alert, 'country'):
-                            country = alert.country.lower()
-                        elif hasattr(alert, 'area'):
-                            # Try to extract country from area
-                            area = alert.area.lower()
-                            for monitored in monitored_countries:
-                                if monitored in area:
-                                    country = monitored
-                                    break
-                        
-                        if not country:
-                            continue
-                        
-                        # Normalize country name
-                        normalized_country = self._normalize_country_name(country)
-                        
-                        # Check if alert is within vacation period
-                        alert_date = None
-                        if hasattr(alert, 'onset') and alert.onset:
-                            alert_date = alert.onset.date()
-                        elif hasattr(alert, 'effective') and alert.effective:
-                            alert_date = alert.effective.date()
-                        else:
-                            alert_date = datetime.now().date()
-                        
-                        if start_date <= alert_date <= end_date:
-                            # Track highest alert level per country
-                            if hasattr(alert, 'awareness_level'):
-                                level = alert.awareness_level
-                            elif hasattr(alert, 'severity'):
-                                # Map severity to level if needed
-                                severity_map = {
-                                    'Extreme': 4, 'Severe': 3, 
-                                    'Moderate': 2, 'Minor': 1, 
-                                    'Unknown': 0
-                                }
-                                level = severity_map.get(alert.severity, 0)
-                            else:
-                                level = 0
-                            
-                            if normalized_country not in alerts_by_country:
-                                alerts_by_country[normalized_country] = {
-                                    'level': self.level_mapping.get(level, 'unknown'),
-                                    'level_num': level,
-                                    'count': 1,
-                                    'alerts': [alert],
-                                    'types': [getattr(alert, 'event', 'Unknown')]
-                                }
-                            else:
-                                alerts_by_country[normalized_country]['count'] += 1
-                                alerts_by_country[normalized_country]['alerts'].append(alert)
-                                alerts_by_country[normalized_country]['types'].append(getattr(alert, 'event', 'Unknown'))
-                                
-                                # Update to highest priority level
-                                current_level = alerts_by_country[normalized_country]['level_num']
-                                if level > current_level:
-                                    alerts_by_country[normalized_country]['level'] = self.level_mapping.get(level, 'unknown')
-                                    alerts_by_country[normalized_country]['level_num'] = level
-                        
-                    except Exception as e:
-                        _LOGGER.warning("Error processing alert: %s", e)
-                        continue
-            
-            _LOGGER.info("Successfully fetched alerts for %d countries using official library", len(alerts_by_country))
-            return alerts_by_country
-            
-        except Exception as e:
-            _LOGGER.error("Error fetching alerts data with Meteoalarm library: %s", e)
-            return {}
-
-    def _get_alerts_data(self):
-        """Synchronous wrapper for async alert fetching."""
-        try:
-            try:
-                loop = asyncio.get_event_loop()
-            except RuntimeError:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-            
-            return loop.run_until_complete(self._get_alerts_data_async())
-        except Exception as e:
-            _LOGGER.error("Error in sync wrapper for alerts: %s", e)
-            return {}
-
     def _render_europe_map(self, warnings_by_country, monitored_countries):
         """Render a detailed Europe map with country polygons."""
         try:
@@ -351,9 +369,9 @@ class MeteoalarmCamera(Camera):
             vacation_start = self._config.get("vacation_start", "Unknown")
             vacation_end = self._config.get("vacation_end", "Unknown")
             
-            title = f'Official Meteoalarm Europe - Weather Warnings Map\n'
-            title += f'Vacation Period: {vacation_start} to {vacation_end}\n'
-            title += f'Updated: {datetime.now().strftime("%d/%m/%Y %H:%M UTC")}'
+            title = f'🌍 Meteoalarm Europe - Weather Warnings Map\n'
+            title += f'🏖️ Vacation Period: {vacation_start} to {vacation_end}\n'
+            title += f'🕐 Updated: {datetime.now().strftime("%d/%m/%Y %H:%M UTC")}'
             
             ax.set_title(title, fontsize=18, fontweight='bold', pad=25)
             
@@ -367,13 +385,13 @@ class MeteoalarmCamera(Camera):
             
             # Create legend
             legend_elements = [
-                mpatches.Patch(color=self.alert_colors['red'], label='Red (Level 4) - Extreme Weather'),
-                mpatches.Patch(color=self.alert_colors['orange'], label='Orange (Level 3) - Severe Weather'),
-                mpatches.Patch(color=self.alert_colors['yellow'], label='Yellow (Level 2) - Moderate Weather'),
-                mpatches.Patch(color=self.alert_colors['green'], label='Green (Level 1) - Minor Weather'),
-                mpatches.Patch(color=self.alert_colors['white'], label='White (Level 0) - No Warning'),
-                mpatches.Patch(color=self.alert_colors['no_alert'], label='Monitored - No Current Warnings'),
-                mpatches.Patch(color=self.alert_colors['not_monitored'], label='Not Monitored')
+                mpatches.Patch(color=self.alert_colors['red'], label='🔴 Red - Extreme Weather'),
+                mpatches.Patch(color=self.alert_colors['orange'], label='🟠 Orange - Severe Weather'),
+                mpatches.Patch(color=self.alert_colors['yellow'], label='🟡 Yellow - Moderate Weather'),
+                mpatches.Patch(color=self.alert_colors['green'], label='🟢 Green - Minor Weather'),
+                mpatches.Patch(color=self.alert_colors['white'], label='⚪ White - No Warning'),
+                mpatches.Patch(color=self.alert_colors['no_alert'], label='💙 Monitored - No Warnings'),
+                mpatches.Patch(color=self.alert_colors['not_monitored'], label='⚫ Not Monitored')
             ]
             
             ax.legend(handles=legend_elements, loc='lower left', bbox_to_anchor=(0.02, 0.02),
@@ -391,9 +409,9 @@ class MeteoalarmCamera(Camera):
                 if level in level_counts:
                     level_counts[level] += 1
             
-            stats_text = f"""🌍 Official Meteoalarm Data
+            stats_text = f"""🌦️ RSS Feed Data Source
 📊 Monitoring: {monitored_count} countries
-⚠️  Countries with warnings: {countries_with_warnings}
+⚠️ Countries with warnings: {countries_with_warnings}
 🚨 Total active warnings: {total_warnings}
 
 📈 Warning Distribution:
@@ -416,7 +434,7 @@ class MeteoalarmCamera(Camera):
                     count = warning['count']
                     types = ', '.join(set(warning['types'][:3]))  # Unique types, first 3
                     emoji = {'red': '🔴', 'orange': '🟠', 'yellow': '🟡', 'green': '🟢'}.get(warning['level'], '⚪')
-                    details_text += f"{emoji} {country.title()}: {level_name} ({count}x)\n   {types}\n"
+                    details_text += f"{emoji} {country.title()}: {level_name} ({count}x)\n   🌪️ {types}\n"
                 
                 if len(warnings_by_country) > 6:
                     details_text += f"... and {len(warnings_by_country) - 6} more countries"
@@ -426,7 +444,7 @@ class MeteoalarmCamera(Camera):
                        bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.95, pad=0.8))
             
             # Add branding
-            ax.text(0.5, 0.02, '🌦️ Powered by Official Meteoalarm API', 
+            ax.text(0.5, 0.02, '🌦️ Powered by Meteoalarm RSS Feed', 
                    transform=ax.transAxes, fontsize=10, ha='center', va='bottom',
                    bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
             
@@ -453,7 +471,7 @@ class MeteoalarmCamera(Camera):
             fig.patch.set_facecolor('white')
             
             # Simple Europe outline
-            ax.text(0.5, 0.5, '🗺️ Detailed Europe Map\nTemporarily Unavailable\n\nUsing Simple View', 
+            ax.text(0.5, 0.5, '🗺️ Detailed Europe Map\nTemporarily Unavailable\n\n📊 Using Simple View', 
                    transform=ax.transAxes, fontsize=16, ha='center', va='center',
                    bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.8))
             
@@ -512,12 +530,12 @@ class MeteoalarmCamera(Camera):
 
     @Throttle(MIN_TIME_BETWEEN_UPDATES)
     def update(self):
-        """Update the camera image using official Meteoalarm library and custom Europe map."""
+        """Update the camera image using RSS feed data and custom Europe map."""
         try:
-            _LOGGER.info("Updating detailed Europe map with official Meteoalarm library...")
+            _LOGGER.info("Updating detailed Europe map with RSS feed data...")
             
-            # Get alerts data using official library
-            alerts_data = self._get_alerts_data()
+            # Get alerts data from RSS
+            alerts_data = self._get_alerts_from_rss()
             
             # Get monitored countries (normalized)
             monitored_countries = [self._normalize_country_name(c) for c in self._config.get("countries", [])]
