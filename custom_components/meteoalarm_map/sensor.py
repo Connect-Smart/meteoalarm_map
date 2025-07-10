@@ -156,19 +156,22 @@ class MeteoalarmAlertTriggerSensor(Entity):
                 self._state = True
                 self.async_schedule_update_ha_state()
 
+                # Cancel vorige geplande reset als die er is
                 if self._reset_task:
-                    self._reset_task()  # Cancel previous scheduled reset
+                    self._reset_task.cancel()
+                    self._reset_task = None
 
                 # Plan reset over 5 minuten
-                self._reset_task = async_call_later(self.hass, 300, self._reset)
+                self._reset_task = self.hass.loop.call_later(300, self._reset_callback)
 
             self._previous_total = new_total
 
         except Exception as e:
             _LOGGER.error("Fout bij update trigger sensor: %s", e)
 
-    def _reset(self, _):
-        _LOGGER.debug("Resetting trigger sensor to False")
+    def _reset_callback(self):
+        """Reset de trigger sensor naar False."""
+        _LOGGER.info("Resetting trigger sensor to False")
         self._state = False
         self._reset_task = None
         self.async_schedule_update_ha_state()
