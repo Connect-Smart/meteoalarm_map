@@ -102,7 +102,7 @@ class MeteoalarmSensor(Entity):
                         # Parse publication date
                         if pub_date:
                             # RSS date format: "Wed, 10 Jul 2025 08:00:00 GMT"
-                            event_time = datetime.strptime(pub_date, "%a, %d %b %Y %H:%M:%S %Z")
+                            event_time = datetime.strptime(pub_date, "%a, %d %b %y %H:%M:%S %z")
                         else:
                             event_time = datetime.now()
                             
