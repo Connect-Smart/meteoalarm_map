@@ -1,13 +1,14 @@
 import logging
 import os
 from datetime import timedelta, datetime
-import geopandas as gpd
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from io import BytesIO
 import warnings
 import asyncio
 from meteoalarm import Meteoalarm
+import requests
+import json
 
 from homeassistant.components.camera import Camera
 from homeassistant.util import Throttle
@@ -56,32 +57,56 @@ class MeteoalarmCamera(Camera):
             0: 'white'    # No warning
         }
         
-        # Country code to name mapping for common variations
+        # Country positions for visualization (approximate center coordinates)
+        self.country_positions = {
+            'italy': (13.0, 42.0),
+            'spain': (-3.0, 40.0),
+            'france': (2.0, 46.0),
+            'germany': (10.0, 51.0),
+            'united kingdom': (-2.0, 54.0),
+            'poland': (20.0, 52.0),
+            'netherlands': (5.0, 52.0),
+            'belgium': (4.5, 50.5),
+            'portugal': (-8.0, 39.5),
+            'switzerland': (8.0, 47.0),
+            'austria': (14.0, 47.5),
+            'norway': (9.0, 61.0),
+            'sweden': (15.0, 62.0),
+            'finland': (26.0, 64.0),
+            'denmark': (10.0, 56.0),
+            'czechia': (15.5, 49.5),
+            'slovakia': (19.5, 48.5),
+            'hungary': (20.0, 47.0),
+            'romania': (25.0, 46.0),
+            'bulgaria': (25.0, 43.0),
+            'greece': (22.0, 39.0),
+            'croatia': (16.0, 45.0),
+            'slovenia': (15.0, 46.0),
+            'serbia': (21.0, 44.0),
+            'bosnia and herzegovina': (18.0, 44.0),
+            'albania': (20.0, 41.0),
+            'montenegro': (19.0, 42.5),
+            'ireland': (-8.0, 53.0),
+            'estonia': (25.0, 59.0),
+            'latvia': (25.0, 57.0),
+            'lithuania': (24.0, 55.0),
+            'luxembourg': (6.0, 49.5),
+            'malta': (14.5, 35.8),
+            'cyprus': (33.0, 35.0),
+            'iceland': (-18.0, 65.0)
+        }
+        
+        # Country name mappings
         self.country_mappings = {
             'gb': 'united kingdom',
             'uk': 'united kingdom',
             'cz': 'czechia',
             'czech republic': 'czechia',
-            'bosnia and herzegovina': 'bosnia and herzegovina',
             'bosnia': 'bosnia and herzegovina',
             'north macedonia': 'north macedonia',
             'macedonia': 'north macedonia',
             'the netherlands': 'netherlands',
-            'holland': 'netherlands',
-            'de': 'germany',
-            'fr': 'france',
-            'it': 'italy',
-            'es': 'spain',
-            'pt': 'portugal',
-            'nl': 'netherlands',
-            'be': 'belgium',
-            'ch': 'switzerland',
-            'at': 'austria',
-            'pl': 'poland',
-            'no': 'norway',
-            'se': 'sweden',
-            'fi': 'finland',
-            'dk': 'denmark'
+            'holland': 'netherlands'
         }
 
     def _normalize_country_name(self, country):
@@ -98,7 +123,7 @@ class MeteoalarmCamera(Camera):
             alerts_by_country = {}
             monitored_countries = [c.lower() for c in self._config.get("countries", [])]
             
-            _LOGGER.info("Fetching alerts for %d monitored countries", len(monitored_countries))
+            _LOGGER.info("Fetching alerts for %d monitored countries using Meteoalarm library", len(monitored_countries))
             
             # Get vacation period for filtering
             start_date = datetime.strptime(self._config.get("vacation_start"), "%Y-%m-%d").date()
@@ -151,7 +176,7 @@ class MeteoalarmCamera(Camera):
                                 'level_num': max_level,
                                 'count': len(country_alerts),
                                 'alerts': country_alerts,
-                                'types': [getattr(alert, 'event', 'Unknown') for alert in country_alerts[:3]]  # First 3 types
+                                'types': [getattr(alert, 'event', 'Unknown') for alert in country_alerts[:3]]
                             }
                             
                             _LOGGER.info("Found %d alerts for %s (max level: %d)", 
@@ -161,7 +186,7 @@ class MeteoalarmCamera(Camera):
                     _LOGGER.warning("Failed to get alerts for %s: %s", country, e)
                     continue
             
-            _LOGGER.info("Successfully fetched alerts for %d countries", len(alerts_by_country))
+            _LOGGER.info("Successfully fetched alerts for %d countries using official library", len(alerts_by_country))
             return alerts_by_country
             
         except Exception as e:
@@ -183,93 +208,81 @@ class MeteoalarmCamera(Camera):
             _LOGGER.error("Error in sync wrapper for alerts: %s", e)
             return {}
 
-    def _render_warning_map(self, warnings_by_country, monitored_countries):
-        """Render the warning map using GeoPandas and matplotlib."""
+    def _render_simple_map(self, warnings_by_country, monitored_countries):
+        """Render a simple map visualization using matplotlib."""
         try:
-            # Load world map data
-            _LOGGER.info("Loading world map data...")
-            world = gpd.read_file("https://raw.githubusercontent.com/datasets/geo-countries/master/data/countries.geojson")
-            
-            # Function to determine color for each country
-            def get_country_color(admin_name):
-                country_name = self._normalize_country_name(admin_name)
-                
-                # Check if country has warnings
-                if country_name in warnings_by_country:
-                    level = warnings_by_country[country_name]["level"]
-                    return self.alert_colors.get(level, self.alert_colors['unknown'])
-                
-                # Check if country is monitored (without warnings)
-                elif country_name in monitored_countries:
-                    return self.alert_colors['no_alert']
-                
-                # Not monitored
-                else:
-                    return self.alert_colors['not_monitored']
-            
-            # Apply colors to countries
-            world['warning_color'] = world['ADMIN'].apply(get_country_color)
-            
-            # Set up the plot with proper styling
-            plt.style.use('default')
+            # Set up the plot
             fig, ax = plt.subplots(figsize=(14, 10))
             fig.patch.set_facecolor('white')
             
-            # Focus on Europe bounds
+            # Set Europe bounds (longitude, latitude)
             europe_bounds = [-15, 35, 35, 75]  # [west, south, east, north]
             ax.set_xlim(europe_bounds[0], europe_bounds[2])
             ax.set_ylim(europe_bounds[1], europe_bounds[3])
             
-            # Plot the world map with colors
-            world.plot(
-                ax=ax, 
-                color=world['warning_color'], 
-                edgecolor='#333333', 
-                linewidth=0.6,
-                alpha=0.9
-            )
+            # Draw a simple Europe outline
+            europe_coastline_x = [-10, -5, 0, 5, 10, 15, 20, 25, 30, 30, 25, 20, 15, 10, 5, 0, -5, -10, -10]
+            europe_coastline_y = [36, 40, 43, 45, 50, 55, 60, 65, 70, 68, 65, 60, 55, 50, 45, 43, 40, 36, 36]
+            ax.plot(europe_coastline_x, europe_coastline_y, 'k-', linewidth=2, alpha=0.3)
+            ax.fill(europe_coastline_x, europe_coastline_y, color='#F0F8FF', alpha=0.3)
+            
+            # Plot countries as circles
+            for country in monitored_countries:
+                normalized_country = self._normalize_country_name(country)
+                
+                if normalized_country in self.country_positions:
+                    lon, lat = self.country_positions[normalized_country]
+                    
+                    # Determine color and size based on alert level
+                    if normalized_country in warnings_by_country:
+                        warning = warnings_by_country[normalized_country]
+                        color = self.alert_colors[warning['level']]
+                        size = 300 + (warning['count'] * 100)  # Larger for more alerts
+                        alpha = 0.8
+                        
+                        # Add alert count text
+                        count_text = f"{warning['count']}"
+                        ax.text(lon, lat, count_text, ha='center', va='center', 
+                               fontsize=10, fontweight='bold', color='white')
+                    else:
+                        color = self.alert_colors['no_alert']
+                        size = 200
+                        alpha = 0.6
+                    
+                    # Plot country circle
+                    ax.scatter(lon, lat, c=color, s=size, alpha=alpha, edgecolors='black', linewidth=2)
+                    
+                    # Add country label
+                    ax.text(lon, lat-1.5, country.title(), ha='center', va='top', 
+                           fontsize=8, fontweight='bold')
             
             # Add title with vacation period info
             vacation_start = self._config.get("vacation_start", "Unknown")
             vacation_end = self._config.get("vacation_end", "Unknown")
             
-            title = f'Meteoalarm Europe - Weather Warnings\n'
+            title = f'Official Meteoalarm Europe - Weather Warnings\n'
             title += f'Vacation Period: {vacation_start} to {vacation_end}\n'
             title += f'Updated: {datetime.now().strftime("%d/%m/%Y %H:%M UTC")}'
             
-            ax.set_title(
-                title,
-                fontsize=16, 
-                fontweight='bold',
-                pad=20
-            )
+            ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
             
-            # Remove axes
-            ax.set_axis_off()
+            # Remove axes ticks and labels
+            ax.set_xticks([])
+            ax.set_yticks([])
             
-            # Create legend with official Meteoalarm levels
+            # Create legend
             legend_elements = [
-                mpatches.Patch(color=self.alert_colors['red'], label='Red (Level 4) - Extreme Weather'),
-                mpatches.Patch(color=self.alert_colors['orange'], label='Orange (Level 3) - Severe Weather'),
-                mpatches.Patch(color=self.alert_colors['yellow'], label='Yellow (Level 2) - Moderate Weather'),
-                mpatches.Patch(color=self.alert_colors['green'], label='Green (Level 1) - Minor Weather'),
-                mpatches.Patch(color=self.alert_colors['white'], label='White (Level 0) - No Warning'),
-                mpatches.Patch(color=self.alert_colors['no_alert'], label='Monitored - No Current Warnings'),
-                mpatches.Patch(color=self.alert_colors['not_monitored'], label='Not Monitored')
+                plt.scatter([], [], c=self.alert_colors['red'], s=200, label='Red (Level 4) - Extreme'),
+                plt.scatter([], [], c=self.alert_colors['orange'], s=200, label='Orange (Level 3) - Severe'),
+                plt.scatter([], [], c=self.alert_colors['yellow'], s=200, label='Yellow (Level 2) - Moderate'),
+                plt.scatter([], [], c=self.alert_colors['green'], s=200, label='Green (Level 1) - Minor'),
+                plt.scatter([], [], c=self.alert_colors['no_alert'], s=200, label='No Warnings')
             ]
             
-            ax.legend(
-                handles=legend_elements, 
-                loc='lower left', 
-                bbox_to_anchor=(0.02, 0.02),
-                fontsize=9,
-                frameon=True,
-                fancybox=True,
-                shadow=True,
-                framealpha=0.95
-            )
+            ax.legend(handles=legend_elements, loc='lower left', bbox_to_anchor=(0.02, 0.02),
+                     fontsize=10, frameon=True, fancybox=True, shadow=True, framealpha=0.9)
             
-            # Add detailed statistics
+            # Add statistics box
             total_warnings = sum(w['count'] for w in warnings_by_country.values())
             countries_with_warnings = len(warnings_by_country)
             monitored_count = len(monitored_countries)
@@ -292,76 +305,53 @@ Warning Levels:
   Yellow (Moderate): {level_counts['yellow']} countries
   Green (Minor): {level_counts['green']} countries"""
             
-            ax.text(
-                0.98, 0.98, stats_text,
-                transform=ax.transAxes,
-                fontsize=9,
-                verticalalignment='top',
-                horizontalalignment='right',
-                bbox=dict(boxstyle='round', facecolor='white', alpha=0.95, pad=0.8),
-                family='monospace'
-            )
+            ax.text(0.98, 0.98, stats_text, transform=ax.transAxes, fontsize=10,
+                   verticalalignment='top', horizontalalignment='right',
+                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.9, pad=0.8),
+                   family='monospace')
             
-            # Add warning details for countries with alerts
+            # Add warning details
             if warnings_by_country:
                 details_text = "Active Warnings:\n"
-                for country, warning in list(warnings_by_country.items())[:5]:  # Show first 5
+                for country, warning in list(warnings_by_country.items())[:4]:
                     level_name = warning['level'].title()
                     count = warning['count']
-                    types = ', '.join(warning['types'][:2])  # First 2 types
-                    details_text += f"• {country.title()}: {level_name} ({count}x) - {types}\n"
+                    types = ', '.join(warning['types'][:2])
+                    details_text += f"• {country.title()}: {level_name} ({count}x)\n  {types}\n"
                 
-                if len(warnings_by_country) > 5:
-                    details_text += f"... and {len(warnings_by_country) - 5} more countries"
+                if len(warnings_by_country) > 4:
+                    details_text += f"... +{len(warnings_by_country) - 4} more countries"
                 
-                ax.text(
-                    0.02, 0.50, details_text,
-                    transform=ax.transAxes,
-                    fontsize=8,
-                    verticalalignment='top',
-                    horizontalalignment='left',
-                    bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.9, pad=0.5)
-                )
+                ax.text(0.02, 0.5, details_text, transform=ax.transAxes, fontsize=9,
+                       verticalalignment='top', horizontalalignment='left',
+                       bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.9, pad=0.5))
             
-            # Save to BytesIO buffer
+            # Save to buffer
             buffer = BytesIO()
-            plt.savefig(
-                buffer, 
-                format='png', 
-                dpi=200,
-                bbox_inches='tight',
-                facecolor='white',
-                edgecolor='none',
-                pad_inches=0.2
-            )
+            plt.savefig(buffer, format='png', dpi=150, bbox_inches='tight',
+                       facecolor='white', edgecolor='none', pad_inches=0.2)
             plt.close(fig)
             buffer.seek(0)
             
-            _LOGGER.info("Successfully rendered official Meteoalarm map")
+            _LOGGER.info("Successfully rendered simple Meteoalarm map")
             return buffer.read()
             
         except Exception as e:
-            _LOGGER.error("Error rendering Meteoalarm map: %s", e)
+            _LOGGER.error("Error rendering simple map: %s", e)
             if 'fig' in locals():
                 plt.close(fig)
             return self._create_error_image(str(e))
 
     def _create_error_image(self, error_msg):
-        """Create a simple error image using matplotlib."""
+        """Create a simple error image."""
         try:
             fig, ax = plt.subplots(figsize=(10, 6))
             fig.patch.set_facecolor('lightgray')
             
-            ax.text(
-                0.5, 0.5, 
-                f'Official Meteoalarm Library Error\n\n{error_msg}\n\nRetrying in {MIN_TIME_BETWEEN_UPDATES}...',
-                transform=ax.transAxes,
-                fontsize=14,
-                ha='center',
-                va='center',
-                color='red',
-                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8)
-            )
+            ax.text(0.5, 0.5, 
+                   f'Official Meteoalarm Library Error\n\n{error_msg}\n\nRetrying in {MIN_TIME_BETWEEN_UPDATES}...',
+                   transform=ax.transAxes, fontsize=14, ha='center', va='center', color='red',
+                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
             
             ax.set_xlim(0, 1)
             ax.set_ylim(0, 1)
@@ -382,7 +372,7 @@ Warning Levels:
     def update(self):
         """Update the camera image using official Meteoalarm library."""
         try:
-            _LOGGER.info("Updating map with official Meteoalarm library...")
+            _LOGGER.info("Updating map with official Meteoalarm library (simple version)...")
             
             # Get alerts data using official library
             alerts_data = self._get_alerts_data()
@@ -390,8 +380,8 @@ Warning Levels:
             # Get monitored countries (normalized)
             monitored_countries = [self._normalize_country_name(c) for c in self._config.get("countries", [])]
             
-            # Render the map
-            image_data = self._render_warning_map(alerts_data, monitored_countries)
+            # Render the simple map
+            image_data = self._render_simple_map(alerts_data, monitored_countries)
             
             # Store the image
             self._last_image = image_data
@@ -403,11 +393,11 @@ Warning Levels:
             
             total_warnings = sum(w['count'] for w in alerts_data.values())
             countries_count = len(alerts_data)
-            _LOGGER.info("Generated official Meteoalarm map: %d countries with %d total warnings", 
+            _LOGGER.info("Generated simple Meteoalarm map: %d countries with %d total warnings", 
                         countries_count, total_warnings)
             
         except Exception as e:
-            _LOGGER.error("Error generating official Meteoalarm map: %s", e)
+            _LOGGER.error("Error generating simple Meteoalarm map: %s", e)
             self._last_image = self._create_error_image(str(e))
 
     def camera_image(self, width=None, height=None):
@@ -416,8 +406,8 @@ Warning Levels:
             self.update()
         return self._last_image
 
-    async def async_camera_image(self, width=None, height=height):
-        """Return camera image bytes asynchronously.""" 
+    async def async_camera_image(self, width=None, height=None):
+        """Return camera image bytes asynchronously."""
         return await self.hass.async_add_executor_job(self.camera_image, width, height)
 
     @property

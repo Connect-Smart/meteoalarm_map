@@ -1,12 +1,11 @@
 {
   "domain": "meteoalarm_map",
   "name": "Meteoalarm Europe Map",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "documentation": "https://www.meteoalarm.org/en/live/",
   "requirements": [
     "requests",
     "voluptuous", 
-    "geopandas",
     "matplotlib",
     "meteoalarm"
   ],
