@@ -452,9 +452,9 @@ class MeteoalarmCamera(Camera):
             vacation_start = self._config.get("vacation_start", "Unknown")
             vacation_end = self._config.get("vacation_end", "Unknown")
             
-            title = f'🌍 Meteoalarm Europe - Weather Warnings Map\n'
-            title += f'🏖️ Vacation Period: {vacation_start} to {vacation_end}\n'
-            title += f'🕐 Updated: {datetime.now().strftime("%d/%m/%Y %H:%M UTC")}'
+            title = f'Meteoalarm Europa - Extreem Weer Waarschuwingen\n'
+            title += f'Vakantie periode: {vacation_start} to {vacation_end}\n'
+            title += f'Laatste update: {datetime.now().strftime("%d/%m/%Y %H:%M UTC")}'
             
             ax.set_title(title, fontsize=18, fontweight='bold', pad=25)
             
@@ -468,13 +468,13 @@ class MeteoalarmCamera(Camera):
             
             # Create legend
             legend_elements = [
-                mpatches.Patch(color=self.alert_colors['red'], label='🔴 Red - Extreme Weather'),
-                mpatches.Patch(color=self.alert_colors['orange'], label='🟠 Orange - Severe Weather'),
-                mpatches.Patch(color=self.alert_colors['yellow'], label='🟡 Yellow - Moderate Weather'),
-                mpatches.Patch(color=self.alert_colors['green'], label='🟢 Green - Minor Weather'),
-                mpatches.Patch(color=self.alert_colors['white'], label='⚪ White - No Warning'),
-                mpatches.Patch(color=self.alert_colors['no_alert'], label='💙 Monitored - No Warnings'),
-                mpatches.Patch(color=self.alert_colors['not_monitored'], label='⚫ Not Monitored')
+                mpatches.Patch(color=self.alert_colors['red'], label='Rood - Extreem weer'),
+                mpatches.Patch(color=self.alert_colors['orange'], label='Oranje - Ernstig weer'),
+                mpatches.Patch(color=self.alert_colors['yellow'], label='Geel - Matig weer'),
+                mpatches.Patch(color=self.alert_colors['green'], label='Groen - Licht weer'),
+                mpatches.Patch(color=self.alert_colors['white'], label='Wit - Geen waarschuwing'),
+                mpatches.Patch(color=self.alert_colors['no_alert'], label='Gemonitord - Geen waarschuwingen'),
+                mpatches.Patch(color=self.alert_colors['not_monitored'], label='Niet gemonitord')
             ]
             
             ax.legend(handles=legend_elements, loc='lower left', bbox_to_anchor=(0.02, 0.02),
@@ -492,17 +492,17 @@ class MeteoalarmCamera(Camera):
                 if level in level_counts:
                     level_counts[level] += 1
             
-            stats_text = f"""🌦️ RSS Feed Data Source
-📊 Monitoring: {monitored_count} countries
-⚠️ Countries with warnings: {countries_with_warnings}
-🚨 Total active warnings: {total_warnings}
+            stats_text = f"""Bron: Meteoalarm RSS-feed
+            Gemonitorde landen: {monitored_count}
+            Landen met waarschuwingen: {countries_with_warnings}
+            Totaal aantal actieve waarschuwingen: {total_warnings}
 
-📈 Warning Distribution:
-   🔴 Red (Extreme): {level_counts['red']} countries
-   🟠 Orange (Severe): {level_counts['orange']} countries  
-   🟡 Yellow (Moderate): {level_counts['yellow']} countries
-   🟢 Green (Minor): {level_counts['green']} countries
-   ⚪ White (No warning): {level_counts['white']} countries"""
+            Verdeling van waarschuwingen:
+            Rood (Extreem): {level_counts['red']} landen
+            Oranje (Ernstig): {level_counts['orange']} landen
+            Geel (Matig): {level_counts['yellow']} landen
+            Groen (Licht): {level_counts['green']} landen
+            Wit (Geen waarschuwing): {level_counts['white']} landen"""
             
             ax.text(0.98, 0.98, stats_text, transform=ax.transAxes, fontsize=11,
                    verticalalignment='top', horizontalalignment='right',
@@ -511,23 +511,23 @@ class MeteoalarmCamera(Camera):
             
             # Add warning details for countries with alerts
             if warnings_by_country:
-                details_text = "🚨 Active Warnings:\n"
+                details_text = "Actieve waarschuwingen:\n"
                 for country, warning in list(warnings_by_country.items())[:6]:
-                    level_name = warning['level'].title()
+                    level_name = warning['level'].capitalize()
                     count = warning['count']
-                    types = ', '.join(set(warning['types'][:3]))  # Unique types, first 3
-                    emoji = {'red': '🔴', 'orange': '🟠', 'yellow': '🟡', 'green': '🟢'}.get(warning['level'], '⚪')
-                    details_text += f"{emoji} {country.title()}: {level_name} ({count}x)\n   🌪️ {types}\n"
+                    types = ', '.join(set(warning['types'][:3]))  # Unieke types, eerste 3
+                    details_text += f"{country.title()}: {level_name} ({count} waarschuwingen)\n   Type: {types}\n"
                 
                 if len(warnings_by_country) > 6:
-                    details_text += f"... and {len(warnings_by_country) - 6} more countries"
+                    details_text += f"... en nog {len(warnings_by_country) - 6} andere landen"
                 
                 ax.text(0.02, 0.65, details_text, transform=ax.transAxes, fontsize=10,
-                       verticalalignment='top', horizontalalignment='left',
-                       bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.95, pad=0.8))
+                        verticalalignment='top', horizontalalignment='left',
+                        bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.95, pad=0.8))
+
             
             # Add branding
-            ax.text(0.5, 0.02, '🌦️ Powered by Meteoalarm RSS Feed', 
+            ax.text(0.5, 0.02, 'Powered by Meteoalarm & Connect-Smart B.V.', 
                    transform=ax.transAxes, fontsize=10, ha='center', va='bottom',
                    bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
             
