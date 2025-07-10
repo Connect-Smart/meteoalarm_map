@@ -289,10 +289,15 @@ class MeteoalarmCamera(Camera):
         except Exception as e:
             _LOGGER.error("Could not create error image: %s", e)
 
-    def camera_image(self):
+    def camera_image(self, width=None, height=None):
+        """Return camera image bytes."""
         if self._last_image is None:
             self.update()
         return self._last_image
+
+    async def async_camera_image(self, width=None, height=None):
+        """Return camera image bytes asynchronously."""
+        return await self.hass.async_add_executor_job(self.camera_image, width, height)
 
     @property
     def name(self):

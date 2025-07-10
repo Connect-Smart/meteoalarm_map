@@ -1,7 +1,7 @@
 {
   "domain": "meteoalarm_map",
   "name": "Meteoalarm Europe Map",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "documentation": "https://www.meteoalarm.org/en/live/",
   "requirements": [
     "requests",
