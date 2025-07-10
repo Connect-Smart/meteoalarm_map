@@ -38,6 +38,15 @@ class MeteoalarmSensor(Entity):
         self._config = config
         self._rss_reader = rss_reader
 
+    async def async_added_to_hass(self):
+        """Start periodic updates every 5 minutes."""
+        async def update_loop():
+            while True:
+                await self.hass.async_add_executor_job(self.update)
+                await asyncio.sleep(300)
+
+        self.hass.loop.create_task(update_loop())
+
     def update(self):
         """Update the sensor state and attributes."""
         try:
@@ -125,11 +134,11 @@ class MeteoalarmAlertTriggerSensor(Entity):
         self._reset_task = None
 
     async def async_added_to_hass(self):
-        """Start automatische update elke 5 minuten."""
+        """Start periodic updates every 5 minutes."""
         async def update_loop():
             while True:
                 await self.hass.async_add_executor_job(self.update)
-                await asyncio.sleep(300)  # 5 minuten
+                await asyncio.sleep(300)
 
         self.hass.loop.create_task(update_loop())
 
@@ -148,8 +157,9 @@ class MeteoalarmAlertTriggerSensor(Entity):
                 self.async_schedule_update_ha_state()
 
                 if self._reset_task:
-                    self._reset_task()
+                    self._reset_task()  # Cancel previous reset if exists
 
+                # Schedule reset after 5 minutes
                 self._reset_task = async_call_later(self.hass, 300, self._reset)
 
             self._previous_total = new_total
@@ -158,7 +168,9 @@ class MeteoalarmAlertTriggerSensor(Entity):
             _LOGGER.error("Fout bij update trigger sensor: %s", e)
 
     def _reset(self, _):
+        _LOGGER.debug("Resetting trigger sensor to False")
         self._state = False
+        self._reset_task = None
         self.async_schedule_update_ha_state()
 
     @property
