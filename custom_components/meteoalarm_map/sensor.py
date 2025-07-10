@@ -157,9 +157,9 @@ class MeteoalarmAlertTriggerSensor(Entity):
                 self.async_schedule_update_ha_state()
 
                 if self._reset_task:
-                    self._reset_task()  # Cancel previous reset if exists
+                    self._reset_task()  # Cancel previous scheduled reset
 
-                # Schedule reset after 5 minutes
+                # Plan reset over 5 minuten
                 self._reset_task = async_call_later(self.hass, 300, self._reset)
 
             self._previous_total = new_total
