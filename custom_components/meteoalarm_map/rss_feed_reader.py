@@ -366,7 +366,8 @@ class MeteoalarmRSSReader:
                 'count': data['count'],
                 'types': data['types'],
                 'titles': [alert['title'] for alert in data['alerts']],
-                'latest_date': data['latest_date']
+                'latest_date': data['latest_date'],
+                'periods': data['alerts'][0].get('periods', [])
             }
         
         return camera_alerts

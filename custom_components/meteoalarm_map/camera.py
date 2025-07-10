@@ -23,6 +23,12 @@ warnings.filterwarnings('ignore')
 _LOGGER = logging.getLogger(__name__)
 MIN_TIME_BETWEEN_UPDATES = timedelta(minutes=10)
 
+MONTHS_NL = {
+    "January": "januari", "February": "februari", "March": "maart", "April": "april",
+    "May": "mei", "June": "juni", "July": "juli", "August": "augustus",
+    "September": "september", "October": "oktober", "November": "november", "December": "december"
+}
+
 async def async_setup_entry(hass, config_entry, async_add_entities):
     """Set up the Meteoalarm camera from a config entry."""
     config = hass.data[DOMAIN]["config"]
@@ -410,13 +416,29 @@ RSS Reader Status: {'✓ Active' if self._rss_reader.last_update else '⚠ No Da
                     translated_types = [self.type_translations.get(t, t) for t in warning['types'][:3]]
                     types_str = ', '.join(translated_types)
 
-                    # Datum parseren en vertalen naar NL-formaat
-                    pub_date_raw = warning.get('latest_date', '')
+                    # Datum uit eerste geldige waarschuwing-periode gebruiken indien beschikbaar
                     try:
-                        parsed_date = parser.parse(pub_date_raw)
-                        date_str = parsed_date.strftime('%-d %B %Y')  # bijv. '8 juli 2025'
+                        if "periods" in warning and warning["periods"]:
+                            from_dt = warning["periods"][0].get("from")
+                            if from_dt:
+                                day = from_dt.day
+                                month_en = from_dt.strftime("%B")
+                                year = from_dt.year
+                                month_nl = MONTHS_NL.get(month_en, month_en)
+                                date_str = f"{day} {month_nl} {year}"
+                            else:
+                                raise ValueError("Geen from_dt gevonden")
+                        else:
+                            raise ValueError("Geen periods in warning")
                     except Exception:
-                        date_str = pub_date_raw[:16]
+                        # Fallback naar publicatiedatum
+                        pub_date_raw = warning.get('latest_date', '')
+                        try:
+                            parsed_date = parser.parse(pub_date_raw)
+                            date_str = parsed_date.strftime('%-d %B %Y')
+                        except:
+                            date_str = pub_date_raw[:16]
+
 
                     # LANDNAAM vertalen
                     country_nl = self.country_translations.get(country, country.title())
