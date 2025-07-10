@@ -1,0 +1,6 @@
+DOMAIN = "meteoalarm_map"
+CAMERA_NAME = "Meteoalarm Europe"
+SENSOR_NAME = "Meteoalarm Alerts"
+IMAGE_PATH = "/config/www/meteoalarm_map.png"
+URL = "https://www.meteoalarm.org/en/live/"
+GEOJSON_FEED = "https://www.meteoalarm.org/feeds/megeojson-EU.json"
