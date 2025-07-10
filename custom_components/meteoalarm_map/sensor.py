@@ -42,13 +42,13 @@ class MeteoalarmSensor(Entity):
         """Start periodic updates every 5 minutes."""
         async def update_loop():
             while True:
-                await self.hass.async_add_executor_job(self.update)
+                await self.async_update()
                 await asyncio.sleep(300)
 
         self.hass.loop.create_task(update_loop())
 
-    def update(self):
-        """Update the sensor state and attributes."""
+    async def async_update(self):
+        """Update the sensor state and attributes asynchronously."""
         try:
             countries = [c.lower() for c in self._config.get("countries", [])]
             start_date = datetime.strptime(self._config.get("vacation_start"), "%Y-%m-%d")
@@ -62,7 +62,11 @@ class MeteoalarmSensor(Entity):
             extended_start_dt = datetime.combine(extended_start, datetime.min.time())
             extended_end_dt = datetime.combine(extended_end, datetime.max.time())
 
-            sensor_data = self._rss_reader.get_alerts_for_sensor(countries, extended_start_dt, extended_end_dt)
+            # Run RSS fetch in executor to avoid blocking
+            sensor_data = await self.hass.async_add_executor_job(
+                self._rss_reader.get_alerts_for_sensor, 
+                countries, extended_start_dt, extended_end_dt
+            )
 
             self._state = sensor_data['total_count']
             self._attributes = {
@@ -100,6 +104,10 @@ class MeteoalarmSensor(Entity):
                 "error": str(e),
                 "last_error_time": datetime.now().isoformat()
             }
+
+    def update(self):
+        """Legacy sync update method (not used anymore)."""
+        pass
 
     @property
     def name(self):
@@ -150,7 +158,7 @@ class MeteoalarmAlertTriggerSensor(Entity):
         
         async def update_loop():
             while True:
-                await self.hass.async_add_executor_job(self.update)
+                await self.async_update()
                 await asyncio.sleep(300)
 
         self.hass.loop.create_task(update_loop())
@@ -187,7 +195,8 @@ class MeteoalarmAlertTriggerSensor(Entity):
         except Exception as e:
             _LOGGER.error("Failed to initialize trigger sensor baseline: %s", e)
 
-    def update(self):
+    async def async_update(self):
+        """Update the trigger sensor asynchronously."""
         try:
             countries = [c.lower() for c in self._config.get("countries", [])]
             start_date = datetime.strptime(self._config.get("vacation_start"), "%Y-%m-%d")
@@ -201,7 +210,12 @@ class MeteoalarmAlertTriggerSensor(Entity):
             extended_start_dt = datetime.combine(extended_start, datetime.min.time())
             extended_end_dt = datetime.combine(extended_end, datetime.max.time())
 
-            data = self._rss_reader.get_alerts_for_sensor(countries, extended_start_dt, extended_end_dt)
+            # Run RSS fetch in executor to avoid blocking
+            data = await self.hass.async_add_executor_job(
+                self._rss_reader.get_alerts_for_sensor, 
+                countries, extended_start_dt, extended_end_dt
+            )
+            
             new_total = data['total_count']
             
             # Track individual alerts
@@ -225,7 +239,7 @@ class MeteoalarmAlertTriggerSensor(Entity):
                                    alert['country'], alert['event'], alert['level'])
                 
                 self._state = True
-                self.async_schedule_update_ha_state()
+                self.async_write_ha_state()
 
                 # Cancel vorige geplande reset als die er is
                 if self._reset_task:
@@ -246,12 +260,17 @@ class MeteoalarmAlertTriggerSensor(Entity):
         except Exception as e:
             _LOGGER.error("Fout bij update trigger sensor: %s", e)
 
+    def update(self):
+        """Legacy sync update method (not used anymore)."""
+        pass
+
     def _reset_callback(self):
         """Reset de trigger sensor naar False."""
         _LOGGER.info("Resetting trigger sensor to False")
         self._state = False
         self._reset_task = None
-        self.async_schedule_update_ha_state()
+        # Use threadsafe call to update state
+        self.hass.loop.call_soon_threadsafe(self.async_write_ha_state)
 
     @property
     def name(self):
